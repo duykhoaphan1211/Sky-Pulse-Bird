@@ -3,6 +3,8 @@ A game created 100% by AI is an upgraded version of Flappy Bird featuring new me
 
 Chatbots like Gemini or ChatGPT can be used to analyze the game to understand shortcuts, mechanics,...
 
+Need 2 dependence libraries: **Pygame-ce** & **Numpy!**
+
 # Sky Pulse Bird — Beginner Guide (by ChatGPT)
 
 **Sky Pulse Bird** is a flappy-style action game with a modern menu system, multiple difficulties, Arcade and Boss modes, a special HELL fight, skins, quests, achievements, and persistent save data. The game runs at **960×540** and targets **60 FPS**. It saves progress to a local JSON file next to the game script.  
