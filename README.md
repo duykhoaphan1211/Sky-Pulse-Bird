@@ -8,7 +8,7 @@ Need 2 dependence libraries: **Pygame-ce** & **Numpy!**
 # SET UP (FOR WINDOWS USERS, STILL work on OTHER OS, but I only use Windows):
 - Install Python: [3.14.4](https://www.python.org/ftp/python/3.14.4/python-3.14.4-amd64.exe)
 - (Search) and Go to **"Command Prompt"** software and type: **pip install pygame-ce** and press Enter, then **pip install numpy** and press Enter.
-- Download the .py file.
+- Download the .py file: [Sky Pulse Bird](https://github.com/duykhoaphan1211/Sky-Pulse-Bird/blob/main/sky_pulse_bird_fix_legendary.py)
 - Open it by double left-click or right-click, then go to "Open with" and select **"Python"** software.
 - Play the game!
 
