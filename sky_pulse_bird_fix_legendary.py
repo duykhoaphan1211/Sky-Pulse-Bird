@@ -175,8 +175,10 @@ def build_arcade_background_scene(theme: dict, theme_index: int) -> dict:
 
     if kind == "DAWN":
         # Warm dawn with layered hills and a reflective distance.
-        pygame.draw.circle(static, (*cloud, 150), (WIDTH - 150, 94), 54)
-        pygame.draw.circle(static, (*haze, 110), (WIDTH - 150, 94), 92, 8)
+        sun_center = (WIDTH - 150, 94)
+        sun_radius = 54
+        pygame.draw.circle(static, (*cloud, 150), sun_center, sun_radius)
+        pygame.draw.circle(static, (*haze, 110), sun_center, 92, 8)
         ridge([(0, 330), (92, 286), (168, 304), (258, 260), (356, 286), (454, 242), (562, 272), (682, 228), (790, 262), (WIDTH, 240), (WIDTH, HEIGHT), (0, HEIGHT)], (74, 102, 148))
         ridge([(0, 362), (126, 316), (214, 332), (306, 302), (402, 320), (504, 286), (614, 306), (726, 282), (850, 304), (WIDTH, 290), (WIDTH, HEIGHT), (0, HEIGHT)], (44, 72, 112))
         ridge([(0, 396), (148, 360), (248, 372), (362, 340), (478, 354), (586, 326), (702, 338), (816, 316), (WIDTH, 328), (WIDTH, HEIGHT), (0, HEIGHT)], (28, 44, 72))
@@ -273,6 +275,7 @@ def build_arcade_background_scene(theme: dict, theme_index: int) -> dict:
         "cloud": cloud,
         "pipe": pipe,
         "pipe_dark": pipe_dark,
+        "sun": {"center": (WIDTH - 150, 94), "radius": 54},
     }
 def draw_round_rect(surf: pygame.Surface, color, rect, radius: int = 18, width: int = 0):
     rect = pygame.Rect(rect)
@@ -347,7 +350,7 @@ def draw_round_outline(surf: pygame.Surface, color, rect, radius: int = 18, widt
     pygame.draw.rect(surf, color, rect, width=width, border_radius=radius)
 
 def draw_round_flash(surf: pygame.Surface, rect: pygame.Rect, radius: int, alpha: int):
-    flash = pygame.Surface(rect.size, pygame.SRCALPHA)
+    flash = get_clear_surface(rect.size, ("round_flash", rect.size))
     tick = pygame.time.get_ticks() * 0.0048
     pulse = 0.72 + 0.28 * math.sin(tick + rect.x * 0.018 + rect.y * 0.022 + rect.width * 0.004)
     alpha = int(clamp(alpha * pulse, 0, 255))
@@ -355,7 +358,7 @@ def draw_round_flash(surf: pygame.Surface, rect: pygame.Rect, radius: int, alpha
         return
     pygame.draw.rect(flash, (255, 255, 255, alpha), flash.get_rect(), border_radius=radius)
 
-    sheen = pygame.Surface(rect.size, pygame.SRCALPHA)
+    sheen = get_clear_surface(rect.size, ("round_sheen", rect.size))
     top_h = max(5, rect.height // 3)
     sheen_alpha = int(clamp(alpha * 0.42, 0, 255))
     pygame.draw.rect(
@@ -395,6 +398,7 @@ _ROUND_RECT_CACHE = {}
 _TEXT_CACHE = {}
 _PARTICLE_CACHE = {}
 _CLOUD_CACHE = {}
+_WORK_SURFACE_CACHE = {}
 
 
 def _trim_cache(cache: dict, limit: int):
@@ -435,6 +439,21 @@ def get_particle_surface(radius: int, color: Tuple[int, int, int], alpha: int):
         pygame.draw.circle(surf, (*color, bucket), (radius * 2, radius * 2), radius)
         _PARTICLE_CACHE[key] = surf
         _trim_cache(_PARTICLE_CACHE, 4096)
+    return surf
+
+
+
+def get_clear_surface(size: tuple[int, int], key):
+    """Return a reusable transparent surface cleared for immediate drawing."""
+    size = (int(size[0]), int(size[1]))
+    cache_key = (size, key)
+    surf = _WORK_SURFACE_CACHE.get(cache_key)
+    if surf is None or surf.get_size() != size:
+        surf = pygame.Surface(size, pygame.SRCALPHA)
+        _WORK_SURFACE_CACHE[cache_key] = surf
+        _trim_cache(_WORK_SURFACE_CACHE, 96)
+    else:
+        surf.fill((0, 0, 0, 0))
     return surf
 
 class SoundBank:
@@ -1286,6 +1305,25 @@ def draw_boss_background(surf: pygame.Surface, theme: dict, bg_kind: str, t: flo
         pygame.draw.rect(surf, ground, (0, HEIGHT - height, WIDTH, height))
         pygame.draw.rect(surf, pipe, (0, HEIGHT - height, WIDTH, 10))
 
+    # Shared boss-mode pressure layer: every boss gets a more cinematic,
+    # more readable silhouette treatment before the per-boss theme details.
+    boss_energy = get_clear_surface((WIDTH, HEIGHT), ("boss_energy", bg_kind))
+    for i in range(4):
+        radius = 112 + i * 58
+        alpha = 18 + i * 10
+        pygame.draw.circle(boss_energy, (*haze, alpha), (WIDTH // 2, 118), radius, 2 if i < 3 else 1)
+    for i in range(14):
+        ang = t * (0.55 + i * 0.03) + i * (math.tau / 14)
+        length = 94 + i * 6 + int(12 * math.sin(t * 1.8 + i))
+        px = WIDTH // 2 + int(math.cos(ang) * length)
+        py = 118 + int(math.sin(ang) * length * 0.68)
+        pygame.draw.line(boss_energy, (*pipe, 26 + (i % 4) * 5), (WIDTH // 2, 118), (px, py), 1)
+    for i in range(18):
+        x = (i * 61 + int(t * 110)) % (WIDTH + 120) - 60
+        y = 42 + (i % 5) * 14 + int(math.sin(t * 4.0 + i) * 4)
+        pygame.draw.circle(boss_energy, (*cloud, 72), (x, y), 2)
+    surf.blit(boss_energy, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
+
     # ─── HELL ───────────────────────────────────────────────────────────────
     # Dense hellscape: lava cracks, towering fire pillars, ember rain,
     # smoke columns, ground spikes, hellfire burst arcs.
@@ -1347,6 +1385,17 @@ def draw_boss_background(surf: pygame.Surface, theme: dict, bg_kind: str, t: flo
             tip = 24 + int((math.sin(t * 2.8 + i * 0.5) + 1) * 12)
             pygame.draw.polygon(surf, pipe, [(x, HEIGHT - 92), (x + 28, HEIGHT - 92), (x + 14, HEIGHT - 92 - tip)])
             pygame.draw.polygon(surf, haze, [(x + 14, HEIGHT - 104), (x + 19, HEIGHT - 92 - tip + 10), (x + 9, HEIGHT - 92 - tip + 10)])
+        # HELL-exclusive surge: extra inferno crowns and drifting cinders so the
+        # background feels more brutal than the standard Ember theme.
+        for i in range(7):
+            sx = 58 + i * 132 + int(math.sin(t * 0.75 + i) * 18)
+            sy = 30 + int(math.sin(t * 1.6 + i * 0.9) * 10)
+            pygame.draw.arc(surf, (255, 180, 80), (sx - 52, sy, 124, 74), 0.12, 2.88, 2)
+            pygame.draw.arc(surf, (120, 18, 14), (sx - 30, sy + 12, 88, 42), 0.2, 2.62, 2)
+        for i in range(20):
+            x = (i * 49 + int(t * 62)) % (WIDTH + 120) - 60
+            y = 18 + (i % 5) * 18 + int(math.sin(t * 3.4 + i) * 6)
+            pygame.draw.circle(surf, cloud if i % 2 else haze, (x, y), 2)
         return
 
     # ─── AEGIS ──────────────────────────────────────────────────────────────
@@ -2022,7 +2071,7 @@ def draw_boss_cinematic_fx(surf: pygame.Surface, theme: dict, bg_kind: str, boss
     flash = 1.0 - ease_out_cubic(clamp(progress, 0.0, 1.0))
     intensity = 0.16 + 0.10 * (phase - 1) + 0.20 * flash
 
-    fx = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    fx = get_clear_surface((WIDTH, HEIGHT), ("boss_cinematic_fx", bg_kind))
     cx = WIDTH // 2
     cy = 118
 
@@ -2045,6 +2094,10 @@ def draw_boss_cinematic_fx(surf: pygame.Surface, theme: dict, bg_kind: str, boss
             x = 36 + i * 92 + int(math.sin(t * 2.4 + i) * 10)
             y = HEIGHT - 108 + int(math.sin(t * 4.8 + i) * 10)
             pygame.draw.polygon(fx, (*accent, 80 + int(60 * flash)), [(x, y), (x + 9, y - 12), (x + 16, y), (x + 8, y + 12)])
+        for i in range(6):
+            rx = 72 + i * 146 + int(math.sin(t * (1.1 + i * 0.04)) * 18)
+            pygame.draw.arc(fx, (*dark, 120), (rx - 72, 34, 144, 220), 0.4, 2.7, 2)
+            pygame.draw.arc(fx, (*core, 140), (rx - 56, 42, 112, 198), 0.2, 2.9, 1)
         return
 
     if bg_kind in {"void", "rift", "nova", "stellar", "obsidian"}:
@@ -2088,7 +2141,7 @@ def draw_boss_cinematic_fx(surf: pygame.Surface, theme: dict, bg_kind: str, boss
             y2 = cy + int(math.sin(ang) * (110 + 12 * i))
             pygame.draw.line(fx, (*core, 110), (x1, y1), (x2, y2), 1)
 
-    vignette = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    vignette = get_clear_surface((WIDTH, HEIGHT), ("boss_cinematic_vignette", bg_kind))
     vignette.fill((0, 0, 0, 10 + int(14 * intensity)))
     pygame.draw.ellipse(vignette, (*dark, 0), pygame.Rect(-140, -70, WIDTH + 280, HEIGHT + 140))
     fx.blit(vignette, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
@@ -2108,7 +2161,7 @@ def boss_visual_rotation(boss) -> float:
     return math.sin(boss.wobble * 2.3) * (2.4 + boss.phase * 0.4)
 
 def draw_boss_body_surface(spec: dict, boss) -> tuple[pygame.Surface, pygame.Rect]:
-    body = pygame.Surface((460, 300), pygame.SRCALPHA)
+    body = get_clear_surface((460, 300), ("boss_body", spec.get("short", spec.get("art", "aegis"))))
     main = spec["body"]
     accent = spec["accent"]
     dark = spec["dark"]
@@ -2498,7 +2551,7 @@ def draw_boss_body_surface(spec: dict, boss) -> tuple[pygame.Surface, pygame.Rec
     return img, rect
 
 def draw_boss_hitbox_surface(spec: dict, boss) -> tuple[pygame.Surface, pygame.Rect]:
-    hitbox = pygame.Surface((460, 300), pygame.SRCALPHA)
+    hitbox = get_clear_surface((460, 300), ("boss_hitbox", spec.get("short", spec.get("art", "aegis"))))
     solid = (255, 255, 255, 255)
     boss_kind = spec.get("art", "aegis")
     is_hell = spec.get("short") == "HELL"
@@ -2792,11 +2845,11 @@ class Pipe:
         self.gap_y = clamp(self.gap_y, top_limit + self.gap_size * 0.5, bottom_limit - self.gap_size * 0.5)
 
     def colliders(self) -> Tuple[pygame.Rect, pygame.Rect]:
-        # Slightly smaller, centered hitboxes that stay fully inside the visible pipe body.
-        # The shape stays rectangular; only the scale and centering are adjusted.
-        width = max(0, int(self.width * 0.84))
+        # Smaller pipe hitboxes for fairer collisions while keeping the same visuals.
+        # Narrower width + extra padding near the gap reduces "cheap" hits.
+        width = max(0, int(self.width * 0.76))
         x = int(round(self.x + (self.width - width) * 0.5))
-        gap_margin = 10
+        gap_margin = 14
 
         gap_top = max(0, int(round(self.gap_y - self.gap_size * 0.5)))
         gap_bottom = int(round(self.gap_y + self.gap_size * 0.5))
@@ -3111,6 +3164,7 @@ class BossProjectile:
         core = spec["core"]
         dark = spec["dark"]
         body = spec["body"]
+        is_hell = spec.get("short") == "HELL"
         age = float(getattr(self, "age", 0.0))
         intro = clamp(age / 0.24, 0.0, 1.0)
         intro_s = ease_out_cubic(intro)
@@ -3182,7 +3236,21 @@ class BossProjectile:
             pygame.draw.circle(glow, (*core, 230), (cx, cy), max(3, self.radius // 2))
         elif style == "ember":
             pygame.draw.circle(glow, (*accent, 60), (cx, cy), self.radius * 2)
-            pygame.draw.polygon(glow, (*body, 240), [(cx - 3, cy - 16), (cx + 10, cy - 1), (cx + 1, cy + 7), (cx + 14, cy + 18), (cx - 8, cy + 8), (cx - 1, cy - 1)])
+            if is_hell:
+                pts = [
+                    (cx - 6, cy - 18), (cx + 6, cy - 14), (cx + 16, cy - 2),
+                    (cx + 10, cy + 8), (cx + 18, cy + 18), (cx + 2, cy + 12),
+                    (cx - 8, cy + 20), (cx - 16, cy + 4),
+                ]
+                pygame.draw.polygon(glow, (*body, 240), pts)
+                pygame.draw.polygon(glow, (*dark, 180), [(cx - 1, cy - 10), (cx + 8, cy - 2), (cx + 2, cy + 7), (cx - 7, cy + 1)])
+                for a in range(6):
+                    ang = self.spin * 0.55 + a * (math.tau / 6)
+                    px = cx + int(math.cos(ang) * (self.radius + 6))
+                    py = cy + int(math.sin(ang) * (self.radius + 6) * 0.74)
+                    pygame.draw.line(glow, (*accent, 120), (cx, cy), (px, py), 1)
+            else:
+                pygame.draw.polygon(glow, (*body, 240), [(cx - 3, cy - 16), (cx + 10, cy - 1), (cx + 1, cy + 7), (cx + 14, cy + 18), (cx - 8, cy + 8), (cx - 1, cy - 1)])
             pygame.draw.circle(glow, (*core, 230), (cx, cy), max(3, self.radius // 2))
         elif style == "tide":
             pygame.draw.circle(glow, (*accent, 58), (cx, cy), self.radius * 2)
@@ -3453,6 +3521,23 @@ class Boss:
     def spec(self) -> dict:
         return BOSS_SPECS[self.boss_id % len(BOSS_SPECS)]
 
+    def health_ratio(self) -> float:
+        return clamp(self.hp / max(1, self.max_hp), 0.0, 1.0)
+
+    def desired_phase_from_hp(self) -> int:
+        ratio = self.health_ratio()
+        phase = 1
+        if ratio <= 0.66:
+            phase = 2
+        if ratio <= 0.33:
+            phase = 3
+        return phase
+
+    def sync_phase_with_hp(self):
+        desired = self.desired_phase_from_hp()
+        while self.phase < desired and not self.dying:
+            self.trigger_phase_change(self.phase + 1)
+
     def start_death(self, duration: float = 2.6):
         self.dying = True
         self.death_timer = 0.0
@@ -3472,10 +3557,12 @@ class Boss:
         self.phase = new_phase
         self.phase_changed = True
         self.phase_transition_timer = 0.0
-        self.phase_transition_duration = 1.12 if self.spec().get("short") == "HELL" else (0.92 if new_phase == 2 else 1.06)
+        # Phase transitions are now driven purely by HP ratios, so the timing can
+        # stay cinematic even when the total boss HP changes.
+        self.phase_transition_duration = 1.18 if self.spec().get("short") == "HELL" else (0.96 if new_phase == 2 else 1.08)
         self.attack_timer = 0.0
-        self.pulse += 1.2 if self.spec().get("short") == "HELL" else 1.0
-        self.wobble += 0.55 if self.spec().get("short") == "HELL" else 0.45
+        self.pulse += 1.35 if self.spec().get("short") == "HELL" else 1.0
+        self.wobble += 0.68 if self.spec().get("short") == "HELL" else 0.45
 
     def update_death(self, dt: float):
         if not self.dying:
@@ -3848,7 +3935,7 @@ class Boss:
             slow, fast = periods[difficulty.name]
         else:
             slow, fast = periods.get("NORMAL", (1.8, 1.0))
-        period = lerp(slow, fast, 1 - self.hp / max(1, self.max_hp))
+        period = lerp(slow, fast, 1 - self.health_ratio())
         period *= 1.02 if self.phase == 1 else 0.96 if self.phase == 2 else 0.90
         if difficulty.name == "INSANE":
             period *= 0.88
@@ -3858,15 +3945,13 @@ class Boss:
             self.attack_timer = 0.0
             self.spawn_attack(difficulty, pipes, projectiles)
 
-        if self.hp <= self.max_hp * 0.76 and self.phase == 1:
-            self.trigger_phase_change(2)
-            if spec.get("name") == "HELL":
-                self.attack_timer = 0.28
-        if self.hp <= self.max_hp * 0.44 and self.phase == 2:
+        desired_phase = self.desired_phase_from_hp()
+        if desired_phase >= 3:
             self.enraged = True
-            self.trigger_phase_change(3)
+        if desired_phase > self.phase:
+            self.sync_phase_with_hp()
             if spec.get("name") == "HELL":
-                self.attack_timer = 0.42
+                self.attack_timer = 0.42 if self.phase >= 3 else 0.28
 
     def _target_pipe(self, pipes: List[Pipe]) -> Optional[Pipe]:
         if not pipes:
@@ -5031,7 +5116,7 @@ class Game:
             self.boss_mode = True
             insane_push = 1.08 if DIFFICULTIES[difficulty_index].name == "INSANE" else 1.0
             if BOSS_SPECS[self.boss_index]["name"] == "HELL":
-                hp = 72
+                hp = 100
             else:
                 hp = int(round(DIFFICULTIES[difficulty_index].boss_hp * BOSS_SPECS[self.boss_index]["hp_mult"] * 0.92 * insane_push))
             self.boss = Boss(hp=hp, max_hp=hp, boss_id=self.boss_index)
@@ -6566,7 +6651,7 @@ class Game:
 
         # Tide: animated wave overlay at bottom
         if art == "tide":
-            wave_surf = pygame.Surface((WIDTH, 80), pygame.SRCALPHA)
+            wave_surf = get_clear_surface((WIDTH, 80), ("boss_env_wave", art))
             for i in range(4):
                 amp = 10 + i * 4
                 phase_off = t * 1.8 + i * 0.9
@@ -6577,7 +6662,7 @@ class Game:
 
         # Aurora: ribbon wave layers
         if art == "aurora":
-            ribbon = pygame.Surface((WIDTH, HEIGHT // 2), pygame.SRCALPHA)
+            ribbon = get_clear_surface((WIDTH, HEIGHT // 2), ("boss_env_ribbon", art))
             colors = [(132, 255, 232, 28), (160, 120, 255, 20), (120, 210, 255, 22)]
             for ci, col in enumerate(colors):
                 for x in range(0, WIDTH, 8):
@@ -6588,7 +6673,7 @@ class Game:
         # Frost: icy vignette edges
         if art == "frost":
             frost_alpha = int(30 + 20 * math.sin(t * 0.7))
-            frost = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            frost = get_clear_surface((WIDTH, HEIGHT), ("boss_env_frost", art))
             for edge_size in (60, 40, 20):
                 pygame.draw.rect(frost, (210, 235, 255, frost_alpha // (edge_size // 20)),
                     (0, 0, WIDTH, edge_size))
@@ -6598,7 +6683,7 @@ class Game:
 
         # Stellar: slow pulsing star-field vignette
         if art == "stellar":
-            star_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            star_surf = get_clear_surface((WIDTH, HEIGHT), ("boss_env_stars", art))
             for i in range(24):
                 sx = (i * 43 + int(t * 15)) % WIDTH
                 sy = (i * 71 + int(t * 9)) % (HEIGHT - 40) + 20
@@ -6609,7 +6694,7 @@ class Game:
         # Void: pulsing dark vignette ring
         if art == "void":
             vp = int(20 + 14 * math.sin(t * 1.4))
-            vign = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            vign = get_clear_surface((WIDTH, HEIGHT), ("boss_env_vign", art))
             pygame.draw.ellipse(vign, (30, 10, 60, vp),
                 (WIDTH // 4, HEIGHT // 4, WIDTH // 2, HEIGHT // 2))
             surf.blit(vign, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
@@ -6871,23 +6956,71 @@ class Game:
                 x = 70 + i * 132 + int(math.sin(t * 0.8 + i) * 9)
                 y = 116 + int(math.sin(t * 1.2 + i) * 4)
                 pygame.draw.circle(surf, haze, (x, y), 2 if i % 3 == 0 else 1)
+
+            # Animated sun: smooth breathing glow with subtle internal motion.
+            sun = scene.get("sun", {})
+            cx, cy = sun.get("center", (WIDTH - 150, 94))
+            radius = sun.get("radius", 54)
+            pulse = 0.5 - 0.5 * math.cos(t * 0.72)
+            micro = 0.5 - 0.5 * math.cos(t * 0.18)
+            sun_fx = pygame.Surface((240, 240), pygame.SRCALPHA)
+            center = (120, 120)
+            glow_r = int(82 + pulse * 8)
+            ring_r = int(98 + pulse * 5)
+            core_r = int(radius * 0.95 + pulse * 2)
+            pygame.draw.circle(sun_fx, (*haze, 24), center, glow_r)
+            pygame.draw.circle(sun_fx, (*theme["cloud"], 78), center, ring_r, 8)
+            pygame.draw.circle(sun_fx, (*theme["cloud"], 210), center, core_r)
+            pygame.draw.circle(sun_fx, (*haze, 150), center, int(34 + pulse * 2))
+            for k in range(12):
+                ang = t * 0.16 + k * (math.tau / 12.0)
+                sway = 0.92 + 0.08 * math.sin(t * 0.54 + k)
+                r1 = 58 + pulse * 3
+                r2 = 76 + pulse * 8
+                x1 = center[0] + int(math.cos(ang) * r1)
+                y1 = center[1] + int(math.sin(ang) * r1 * sway)
+                x2 = center[0] + int(math.cos(ang) * r2)
+                y2 = center[1] + int(math.sin(ang) * r2 * sway)
+                pygame.draw.line(sun_fx, (*haze, 62), (x1, y1), (x2, y2), 2 if k % 2 == 0 else 1)
+            spec_x = center[0] + int(math.cos(t * 0.34) * (9 + micro * 3))
+            spec_y = center[1] + int(math.sin(t * 0.29) * (5 + micro * 2))
+            pygame.draw.circle(sun_fx, (*WHITE, 110), (spec_x, spec_y), 4)
+            surf.blit(sun_fx, sun_fx.get_rect(center=(cx, cy)))
+
+            # More dynamic sky noise: drifting sparkles + shimmering atmosphere.
             for i, (sx, sy, size, phase, col) in enumerate(scene["sparkles"]):
                 if (i + int(t * 2.0)) % 3 == 0:
                     continue
                 alpha_size = size + (1 if shimmer > 0.7 and i % 2 == 0 else 0)
-                pygame.draw.circle(surf, col, (int((sx + t * 6) % WIDTH), int(sy + math.sin(t * 0.9 + phase * 6.0) * 2)), alpha_size)
+                xx = int((sx + t * 6) % WIDTH)
+                yy = int(sy + math.sin(t * 0.9 + phase * 6.0) * 2)
+                pygame.draw.circle(surf, col, (xx, yy), alpha_size)
+            for i in range(3):
+                x = 120 + i * 250 + int(math.sin(t * 0.35 + i) * 24)
+                y = 190 + int(math.sin(t * 0.62 + i * 1.4) * 6)
+                pygame.draw.arc(surf, (*haze, 60), (x - 96, y - 24, 192, 70), 0.12, 2.84, 2)
 
         elif kind == "NIGHT":
             # Mild parallax twinkles and drifting nocturnal mist.
+            mist_y = 132 + int(math.sin(t * 0.24) * 6)
+            pygame.draw.line(surf, (*haze, 64), (0, mist_y), (WIDTH, mist_y - 8), 1)
             for i, (sx, sy, size, phase, col) in enumerate(scene["sparkles"]):
                 flicker = 0.5 + 0.5 * math.sin(t * (1.1 + (i % 3) * 0.07) + phase * math.tau)
                 if flicker < 0.42:
                     continue
-                pygame.draw.circle(surf, col, (sx, sy), 1 if size == 1 else 2)
-            for i in range(3):
+                star_x = sx + int(math.sin(t * 0.15 + phase * 8.0) * 2)
+                star_y = sy + int(math.cos(t * 0.18 + phase * 5.0) * 1)
+                pygame.draw.circle(surf, col, (star_x, star_y), 1 if size == 1 else 2)
+            for i in range(4):
                 x = 104 + i * 286 + int(math.sin(t * 0.35 + i) * 18)
-                y = 148 + (i % 2) * 14
+                y = 148 + (i % 2) * 14 + int(math.sin(t * 0.9 + i) * 4)
                 pygame.draw.arc(surf, haze, (x - 84, y - 18, 172, 56), 0.18, 2.95, 2)
+            # Thin moon-halo sweep and drifting cloud wisps.
+            sweep_x = int((math.sin(t * 0.17) * 0.5 + 0.5) * (WIDTH + 240)) - 120
+            pygame.draw.arc(surf, (*cloud, 70), (sweep_x - 132, 36, 264, 96), 0.15, 2.95, 2)
+            for i in range(6):
+                x = (i * 182 + int(t * 20)) % (WIDTH + 180) - 90
+                pygame.draw.line(surf, (*pipe_dark, 120), (x, 398 + (i % 2) * 4), (x + 54, 386 + (i % 2) * 4), 1)
             pygame.draw.line(surf, pipe_dark, (0, 406), (WIDTH, 390), 1)
             pygame.draw.line(surf, pipe, (0, 410), (WIDTH, 398), 1)
 
@@ -6898,13 +7031,18 @@ class Game:
                 xx = int((sx + math.sin(t * 0.8 + phase * 8.0) * 18) % WIDTH)
                 if yy < -20:
                     yy += HEIGHT + 40
-                pygame.draw.circle(surf, col, (xx, yy), size)
+                pulse = 0.6 + 0.4 * math.sin(t * 1.4 + phase * 7.0)
+                pygame.draw.circle(surf, col, (xx, yy), max(1, int(size * pulse)))
             for i in range(4):
                 x = 92 + i * 206 + int(math.sin(t * 1.8 + i) * 11)
                 pygame.draw.arc(surf, haze, (x - 64, 34, 132, 68), 0.22, 2.76, 2)
             for i in range(10):
                 x = (i * 101 + int(t * 48)) % (WIDTH + 120) - 60
-                pygame.draw.line(surf, pipe_dark, (x, HEIGHT - 122), (x + 26, HEIGHT - 76), 2)
+                wob = int(math.sin(t * 1.2 + i) * 6)
+                pygame.draw.line(surf, pipe_dark, (x, HEIGHT - 122), (x + 26 + wob, HEIGHT - 76), 2)
+            for i in range(5):
+                x = 76 + i * 168 + int(math.sin(t * 0.52 + i) * 16)
+                pygame.draw.circle(surf, (*haze, 88), (x, 122 + int(math.sin(t * 1.1 + i) * 8)), 3)
 
         else:  # AURORA
             # Slow sweeping light curtains with subtle gliding sparks.
@@ -6914,11 +7052,17 @@ class Game:
                 pygame.draw.lines(surf, haze if i != 1 else cloud, False, shifted, 2)
             sweep_x = int((math.sin(t * 0.28) * 0.5 + 0.5) * (WIDTH + 220)) - 110
             pygame.draw.arc(surf, haze, (sweep_x - 160, 38, 320, 118), 0.12, 2.96, 2)
+            # Add layered glow ripples and slow spark drift so the scene never feels static.
+            for i in range(3):
+                x = 96 + i * 274 + int(math.sin(t * 0.23 + i) * 14)
+                y = 82 + i * 18 + int(math.sin(t * 0.44 + i * 1.2) * 8)
+                pygame.draw.arc(surf, (*haze, 62), (x - 150, y - 24, 300, 96), 0.15, 2.88, 2)
             for i, (sx, sy, size, phase, col) in enumerate(scene["sparkles"]):
                 if (i + int(t * 3)) % 4 == 0:
                     continue
                 yy = sy + int(math.sin(t * 0.8 + phase * 6.0) * 4)
-                pygame.draw.circle(surf, col, (sx, yy), size)
+                xx = sx + int(math.cos(t * 0.22 + phase * 4.0) * 2)
+                pygame.draw.circle(surf, col, (xx, yy), size)
 
         # Finish with a slim ground strip to keep the horizon crisp.
         pygame.draw.rect(surf, pipe_dark, (0, HEIGHT - 14, WIDTH, 14))
@@ -8148,7 +8292,7 @@ class Game:
 
     def _draw_egg_scanlines(self, surf: pygame.Surface):
         strength = self._egg_scanline_strength()
-        scan = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        scan = get_clear_surface((WIDTH, HEIGHT), ("egg_scanlines", self.egg_phase or "none"))
         # Primary scanlines every 2px
         for y in range(0, HEIGHT, 2):
             base_a = 12 if y % 4 else 22
@@ -8198,7 +8342,7 @@ class Game:
         if strength > 0.28:
             split_amt = int(strength * 14)
             # Red channel shifted left
-            r_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            r_surf = get_clear_surface((WIDTH, HEIGHT), ("egg_rgb_split_r", int(strength * 100)))
             r_surf.blit(base, (0, 0))
             r_arr = pygame.surfarray.pixels3d(r_surf)
             r_arr[:, :, 1] = 0
@@ -8206,7 +8350,7 @@ class Game:
             del r_arr
             surf.blit(r_surf, (-split_amt, 0), special_flags=pygame.BLEND_RGB_ADD)
             # Blue channel shifted right
-            b_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            b_surf = get_clear_surface((WIDTH, HEIGHT), ("egg_rgb_split_b", int(strength * 100)))
             b_surf.blit(base, (0, 0))
             b_arr = pygame.surfarray.pixels3d(b_surf)
             b_arr[:, :, 0] = 0
@@ -8225,7 +8369,7 @@ class Game:
         strength = self.egg_fx_strength
         if strength <= 0.05:
             return
-        noise = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        noise = get_clear_surface((WIDTH, HEIGHT), ("egg_noise", int(strength * 100)))
 
         # Fine pixel noise
         speck_count = int(1600 + strength * 3800)
@@ -8249,7 +8393,7 @@ class Game:
                 bc = random.choice([(0, 255, 80), (255, 0, 80), (255, 255, 0),
                                     (0, 80, 255), (255, 255, 255), (80, 0, 0)])
                 ba = random.randint(30, 120)
-                block = pygame.Surface((bw, bh), pygame.SRCALPHA)
+                block = get_clear_surface((bw, bh), ("egg_block", bw, bh, bc, ba))
                 block.fill((*bc, ba))
                 surf.blit(block, (bx, by))
 
@@ -8533,12 +8677,11 @@ class Game:
                 # ── Remap mouse positions from window space → game space ──
                 event = self._remap_mouse_event(event)
 
-                # ── Easter egg: 3 + 6 in any non-gameplay state ──────────
+                # ── Easter egg: only 3 then 6 in any non-gameplay state ─────
                 if self.state not in ("PLAY", "PAUSE", "GAME_OVER", "CLEAR", "MATRIX_EGG"):
                     if event.type == pygame.KEYDOWN:
                         pressed = pygame.key.get_pressed()
-                        if (event.key == pygame.K_3 and pressed[pygame.K_6]) or \
-                           (event.key == pygame.K_6 and pressed[pygame.K_3]):
+                        if event.key == pygame.K_3 and pressed[pygame.K_6]:
                             self._start_matrix_egg()
                             continue
                     if self.state == "MENU":
