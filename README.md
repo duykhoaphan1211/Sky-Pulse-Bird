@@ -1,4 +1,7 @@
 # Sky Pulse Bird
+
+<p align="center"> <img src="https://img.shields.io/badge/Python-3.14-blue?style=for-the-badge&logo=python"> <img src="https://img.shields.io/badge/Pygame-CE-green?style=for-the-badge"> <img src="https://img.shields.io/badge/Platform-Windows-lightgrey?style=for-the-badge"> <img src="https://img.shields.io/badge/Status-Active-success?style=for-the-badge"> </p> <p align="center"> A modern arcade flight game with bosses, progression, skins, and quests.<br> Easy to learn — hard to master. </p>
+
 A game created **100% by AI** is an upgraded version of Flappy Bird featuring new mechanics, modes, bosses, and even a hidden **EASTER EGG** that appears when you press the **3 and 6** keys while not in a level!
 
 Chatbots like Gemini or ChatGPT can be used to analyze the game to understand shortcuts, mechanics,...
