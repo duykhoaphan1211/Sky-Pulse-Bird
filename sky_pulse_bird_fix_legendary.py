@@ -236,28 +236,6 @@ def draw_text(surf, font, text, pos, color=WHITE, center=False, shadow=True, ali
     return rect
 
 _SYSFONT_CACHE = {}
-_ALPHA_SURFACE_CACHE = {}
-
-
-def get_cached_alpha_surface(size: Tuple[int, int], tag: str = "") -> pygame.Surface:
-    """Return a reusable transparent surface for short-lived drawing jobs.
-
-    The surface is cleared before every reuse, so callers can draw into it,
-    blit it immediately, and then safely let the next call reuse the same cache
-    slot. The optional tag keeps different temporary layers separate even when
-    they share the same size.
-    """
-    w = max(1, int(size[0]))
-    h = max(1, int(size[1]))
-    key = (w, h, tag)
-    surf = _ALPHA_SURFACE_CACHE.get(key)
-    if surf is None:
-        surf = pygame.Surface((w, h), pygame.SRCALPHA)
-        _ALPHA_SURFACE_CACHE[key] = surf
-    else:
-        surf.fill((0, 0, 0, 0))
-    return surf
-
 
 def get_cached_sysfont(name: str, size: int, bold: bool = False, italic: bool = False):
     key = (name, size, bold, italic)
@@ -2414,7 +2392,7 @@ class Particle:
             return
         alpha = clamp(self.life / 0.7, 0.0, 1.0)
         radius = max(1, int(self.size * (0.6 + 0.8 * alpha)))
-        overlay = get_cached_alpha_surface((radius * 4, radius * 4), f"particle_{radius}")
+        overlay = pygame.Surface((radius * 4, radius * 4), pygame.SRCALPHA)
         c = (*self.color, int(255 * alpha))
         pygame.draw.circle(overlay, c, (radius * 2, radius * 2), radius)
         surf.blit(overlay, (self.x - radius * 2, self.y - radius * 2))
@@ -2482,7 +2460,7 @@ class Bird:
         skin = self.skin()
         angle = clamp(-self.vy * 0.06, -28, 34)
         r = self.radius
-        body = get_cached_alpha_surface((r * 4, r * 4), f"bird_{self.skin_index}_{r}")
+        body = pygame.Surface((r * 4, r * 4), pygame.SRCALPHA)
         cx = cy = r * 2
         flap = 0.5 + 0.5 * math.sin(self.wing_phase * 2.0)
         wing_raise = 1 if math.sin(self.wing_phase) > 0 else -1
@@ -2949,9 +2927,9 @@ class BossProjectile:
         intro_s = ease_out_cubic(intro)
         pulse = 0.82 + 0.18 * math.sin(self.spin * 0.8 + age * 8.0)
         size = self.radius * 8 + 24
-        glow = get_cached_alpha_surface((size, size), f"proj_glow_{self.boss_id}_{self.radius}_{style}")
+        glow = pygame.Surface((size, size), pygame.SRCALPHA)
         cx = cy = size // 2
-        trail = get_cached_alpha_surface((size, size), f"proj_trail_{self.boss_id}_{self.radius}_{style}")
+        trail = pygame.Surface((size, size), pygame.SRCALPHA)
         dirx = -1 if self.vx >= 0 else 1
         diry = -1 if self.vy >= 0 else 1
         trail_len = int((1.0 - intro_s) * (18 + self.radius * 1.9))
@@ -3945,7 +3923,7 @@ class Cloud:
     def draw(self, surf: pygame.Surface, color: Tuple[int, int, int]):
         w = int(90 * self.scale)
         h = int(42 * self.scale)
-        cloud = get_cached_alpha_surface((w + 40, h + 20), f"cloud_{w}_{h}_{color}")
+        cloud = pygame.Surface((w + 40, h + 20), pygame.SRCALPHA)
         c = (*color, 180)
         pygame.draw.ellipse(cloud, c, (8, 10, w * 0.5, h * 0.72))
         pygame.draw.ellipse(cloud, c, (w * 0.25, 4, w * 0.45, h * 0.95))
@@ -3966,7 +3944,6 @@ class Game:
         pygame.init()
         pygame.display.set_caption(GAME_TITLE)
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        self.frame_surface = pygame.Surface((WIDTH, HEIGHT)).convert()
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("arial", 22)
         self.font_big = pygame.font.SysFont("arial", 34, bold=True)
@@ -6366,7 +6343,7 @@ class Game:
 
         # Tide: animated wave overlay at bottom
         if art == "tide":
-            wave_surf = get_cached_alpha_surface((WIDTH, 80), "boss_wave_tide")
+            wave_surf = pygame.Surface((WIDTH, 80), pygame.SRCALPHA)
             for i in range(4):
                 amp = 10 + i * 4
                 phase_off = t * 1.8 + i * 0.9
@@ -6377,7 +6354,7 @@ class Game:
 
         # Aurora: ribbon wave layers
         if art == "aurora":
-            ribbon = get_cached_alpha_surface((WIDTH, HEIGHT // 2), "boss_ribbon_aurora")
+            ribbon = pygame.Surface((WIDTH, HEIGHT // 2), pygame.SRCALPHA)
             colors = [(132, 255, 232, 28), (160, 120, 255, 20), (120, 210, 255, 22)]
             for ci, col in enumerate(colors):
                 for x in range(0, WIDTH, 8):
@@ -6800,10 +6777,10 @@ class Game:
             if self.boss_mode and self.boss:
                 gap = pipe.gap_rect()
                 if self.boss.hp > 0 and gap.width > 0:
+                    ring = pygame.Surface((gap.width + 54, gap.height + 54), pygame.SRCALPHA)
+                    a = int(100 + 90 * pulse)
                     phase = self.boss.phase
                     spec = self.boss.spec()
-                    ring = get_cached_alpha_surface((gap.width + 54, gap.height + 54), f"boss_gap_{spec['name']}_{gap.width}_{gap.height}_{phase}")
-                    a = int(100 + 90 * pulse)
                     pygame.draw.ellipse(ring, (255, 220, 160, a), (12, 12, gap.width + 30, gap.height + 30), 4)
                     pygame.draw.ellipse(ring, (255, 120, 120, a), (22, 22, gap.width + 10, gap.height + 10), 2)
                     pygame.draw.ellipse(ring, (*spec["accent"], 80 + 18 * phase), (2, 2, gap.width + 50, gap.height + 50), 1)
@@ -6824,8 +6801,7 @@ class Game:
             t.draw(surf, self.font)
 
     def draw_play(self):
-        surf = self.frame_surface
-        surf.fill((0, 0, 0))
+        surf = self.screen.copy()
         self.draw_background(surf)
         # ── Boss environment background layer ─────────────────────────────────
         if self.boss_mode:
