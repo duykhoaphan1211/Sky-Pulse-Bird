@@ -125,65 +125,220 @@ def build_gradient_surface(top: Tuple[int, int, int], bottom: Tuple[int, int, in
     arr[:] = grad[:, None, :].astype(np.uint8)
     return pygame.surfarray.make_surface(arr.swapaxes(0, 1))
 
+
+
+def get_cloud_surface(scale: float, color: Tuple[int, int, int]) -> pygame.Surface:
+    scale = max(0.3, float(scale))
+    w = max(18, int(90 * scale))
+    h = max(10, int(42 * scale))
+    key = (w, h, color)
+    cloud = _CLOUD_CACHE.get(key)
+    if cloud is None:
+        cloud = pygame.Surface((w + 40, h + 20), pygame.SRCALPHA)
+        c = (*color, 180)
+        pygame.draw.ellipse(cloud, c, (8, 10, w * 0.5, h * 0.72))
+        pygame.draw.ellipse(cloud, c, (w * 0.25, 4, w * 0.45, h * 0.95))
+        pygame.draw.ellipse(cloud, c, (w * 0.53, 12, w * 0.40, h * 0.68))
+        _CLOUD_CACHE[key] = cloud
+    return cloud
+
+
+def build_arcade_background_scene(theme: dict, theme_index: int) -> dict:
+    base = build_gradient_surface(theme["sky_top"], theme["sky_bottom"]).convert()
+    static = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+
+    rng = random.Random(0xA11CE + theme_index * 1009)
+    haze = theme["haze"]
+    pipe = theme["pipe"]
+    pipe_dark = theme["pipe_dark"]
+    cloud = theme["cloud"]
+
+    # Common cinematic glow.
+    glow = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    pygame.draw.ellipse(glow, (*haze, 28), pygame.Rect(-120, -48, WIDTH + 240, 200))
+    pygame.draw.ellipse(glow, (*pipe, 18), pygame.Rect(WIDTH // 2 - 320, -20, 640, 170))
+    static.blit(glow, (0, 0))
+
+    clouds = []
+    sparkles = []
+    ribbons = []
+
+    def ridge(points, color):
+        pygame.draw.polygon(static, color, points)
+
+    def add_cloud(x, y, scale, speed, mix=0.0):
+        c = rgb_lerp(cloud, haze, mix)
+        surf = get_cloud_surface(scale, c)
+        clouds.append((surf, float(x), float(y), float(speed), float(rng.uniform(-1.5, 1.5))))
+
+    kind = theme["name"]
+
+    if kind == "DAWN":
+        # Warm dawn with layered hills and a reflective distance.
+        pygame.draw.circle(static, (*cloud, 150), (WIDTH - 150, 94), 54)
+        pygame.draw.circle(static, (*haze, 110), (WIDTH - 150, 94), 92, 8)
+        ridge([(0, 330), (92, 286), (168, 304), (258, 260), (356, 286), (454, 242), (562, 272), (682, 228), (790, 262), (WIDTH, 240), (WIDTH, HEIGHT), (0, HEIGHT)], (74, 102, 148))
+        ridge([(0, 362), (126, 316), (214, 332), (306, 302), (402, 320), (504, 286), (614, 306), (726, 282), (850, 304), (WIDTH, 290), (WIDTH, HEIGHT), (0, HEIGHT)], (44, 72, 112))
+        ridge([(0, 396), (148, 360), (248, 372), (362, 340), (478, 354), (586, 326), (702, 338), (816, 316), (WIDTH, 328), (WIDTH, HEIGHT), (0, HEIGHT)], (28, 44, 72))
+        pygame.draw.rect(static, theme["ground"], (0, HEIGHT - 76, WIDTH, 76))
+        pygame.draw.rect(static, pipe, (0, HEIGHT - 76, WIDTH, 8))
+        for i in range(5):
+            x = 80 + i * 156 + rng.randint(-12, 12)
+            y = 78 + (i % 2) * 16
+            pygame.draw.arc(static, (*haze, 58), (x - 56, y - 8, 124, 46), 0.18, 3.0, 3)
+        for i in range(6):
+            add_cloud(rng.randint(-50, WIDTH - 40), rng.randint(42, 150), rng.uniform(0.58, 1.18), rng.uniform(9.0, 18.0), rng.random() * 0.55)
+        sparkles = [(rng.randint(0, WIDTH), rng.randint(10, 190), rng.randint(1, 2), rng.random(), cloud) for _ in range(10)]
+
+    elif kind == "NIGHT":
+        # Night skyline with stars and a subtle aurora ribbon.
+        for i in range(70):
+            x = rng.randint(0, WIDTH - 1)
+            y = rng.randint(8, 200)
+            r = 1 if i % 5 else 2
+            pygame.draw.circle(static, (*cloud, 210 if r == 2 else 150), (x, y), r)
+        pygame.draw.circle(static, (*cloud, 180), (WIDTH - 150, 86), 26)
+        pygame.draw.circle(static, (*haze, 75), (WIDTH - 150, 86), 52, 2)
+        ribbons = [
+            [(0, 164), (120, 146), (246, 156), (378, 132), (498, 148), (628, 126), (756, 138), (WIDTH, 122)],
+            [(0, 194), (130, 178), (244, 188), (372, 168), (508, 182), (646, 166), (780, 174), (WIDTH, 160)],
+        ]
+        for band, color in zip(ribbons, ((62, 122, 196), (30, 82, 132))):
+            pygame.draw.lines(static, color, False, band, 12)
+        skyline = [(0, 390), (58, 390), (58, 336), (92, 336), (92, 362), (118, 362), (118, 314), (148, 314),
+                   (148, 350), (178, 350), (178, 302), (212, 302), (212, 372), (248, 372), (248, 330),
+                   (282, 330), (282, 300), (322, 300), (322, 352), (356, 352), (356, 286), (392, 286),
+                   (392, 362), (432, 362), (432, 320), (470, 320), (470, 294), (516, 294), (516, 344),
+                   (552, 344), (552, 306), (594, 306), (594, 350), (632, 350), (632, 290), (676, 290),
+                   (676, 372), (720, 372), (720, 324), (760, 324), (760, 296), (808, 296), (808, 352),
+                   (850, 352), (850, 316), (896, 316), (896, 388), (WIDTH, 388), (WIDTH, HEIGHT), (0, HEIGHT)]
+        ridge(skyline, (18, 26, 42))
+        ridge([(0, 420), (180, 398), (354, 414), (520, 394), (724, 410), (WIDTH, 402), (WIDTH, HEIGHT), (0, HEIGHT)], (10, 14, 24))
+        pygame.draw.rect(static, theme["ground"], (0, HEIGHT - 72, WIDTH, 72))
+        pygame.draw.rect(static, pipe, (0, HEIGHT - 72, WIDTH, 8))
+        for i in range(4):
+            add_cloud(rng.randint(-60, WIDTH - 40), rng.randint(42, 130), rng.uniform(0.48, 0.92), rng.uniform(4.0, 9.0), rng.random() * 0.4 + 0.15)
+        sparkles = [(rng.randint(0, WIDTH), rng.randint(20, 190), rng.randint(1, 2), rng.random(), cloud) for _ in range(24)]
+
+    elif kind == "EMBER":
+        # Volcanic ridges and a molten horizon.
+        ridge([(0, 320), (100, 260), (196, 286), (280, 238), (376, 272), (472, 220), (584, 252), (676, 198), (794, 244), (WIDTH, 208), (WIDTH, HEIGHT), (0, HEIGHT)], (110, 46, 34))
+        ridge([(0, 356), (132, 312), (220, 334), (326, 298), (430, 318), (532, 286), (646, 312), (750, 270), (880, 298), (WIDTH, 288), (WIDTH, HEIGHT), (0, HEIGHT)], (72, 26, 22))
+        ridge([(0, 402), (152, 372), (266, 386), (374, 356), (490, 370), (604, 340), (716, 358), (824, 334), (WIDTH, 346), (WIDTH, HEIGHT), (0, HEIGHT)], (34, 18, 18))
+        pygame.draw.rect(static, theme["ground"], (0, HEIGHT - 86, WIDTH, 86))
+        pygame.draw.rect(static, pipe, (0, HEIGHT - 86, WIDTH, 10))
+        for i in range(8):
+            x = 52 + i * 122
+            pygame.draw.line(static, (210, 70, 18), (x, HEIGHT - 86), (x + 18, HEIGHT - 28), 3)
+            pygame.draw.line(static, (255, 148, 40), (x + 8, HEIGHT - 80), (x + 28, HEIGHT - 30), 1)
+        for i in range(5):
+            sx = 88 + i * 182
+            pygame.draw.arc(static, (*haze, 90), (sx - 54, 26, 118, 72), 0.18, 2.95, 4)
+            pygame.draw.arc(static, (*pipe_dark, 120), (sx - 42, 42, 96, 48), 0.24, 2.7, 2)
+        for i in range(6):
+            add_cloud(rng.randint(-50, WIDTH - 40), rng.randint(38, 136), rng.uniform(0.52, 1.0), rng.uniform(5.0, 10.0), rng.random() * 0.4 + 0.35)
+        sparkles = [(rng.randint(0, WIDTH), rng.randint(20, 210), rng.randint(1, 2), rng.random(), haze if i % 2 else cloud) for i in range(30)]
+
+    else:  # AURORA
+        # Shimmering aurora curtains over layered mountains and reflective water.
+        ribbons = [
+            [(0, 82), (84, 62), (172, 88), (256, 58), (350, 82), (454, 44), (552, 76), (662, 52), (776, 84), (WIDTH, 54)],
+            [(0, 118), (82, 102), (168, 124), (254, 100), (342, 118), (442, 88), (560, 114), (684, 96), (804, 122), (WIDTH, 88)],
+            [(0, 150), (94, 138), (190, 152), (284, 130), (388, 150), (490, 122), (590, 146), (704, 126), (818, 154), (WIDTH, 136)],
+        ]
+        ribbon_colors = ((128, 255, 220), (82, 188, 255), (182, 140, 255))
+        for band, color in zip(ribbons, ribbon_colors):
+            pygame.draw.lines(static, color, False, band, 8)
+        ridge([(0, 330), (82, 292), (188, 304), (274, 260), (384, 288), (494, 242), (608, 272), (718, 232), (842, 270), (WIDTH, 246), (WIDTH, HEIGHT), (0, HEIGHT)], (56, 92, 132))
+        ridge([(0, 376), (130, 342), (228, 356), (332, 326), (442, 344), (560, 314), (682, 332), (790, 304), (WIDTH, 320), (WIDTH, HEIGHT), (0, HEIGHT)], (24, 58, 86))
+        pygame.draw.rect(static, theme["ground"], (0, HEIGHT - 74, WIDTH, 74))
+        pygame.draw.rect(static, pipe, (0, HEIGHT - 74, WIDTH, 8))
+        # Reflections on the waterline.
+        for i in range(7):
+            x = 70 + i * 128
+            pygame.draw.line(static, (*haze, 88), (x, HEIGHT - 118), (x + 48, HEIGHT - 84), 2)
+            pygame.draw.line(static, (*cloud, 50), (x + 14, HEIGHT - 112), (x + 46, HEIGHT - 88), 1)
+        for i in range(5):
+            add_cloud(rng.randint(-50, WIDTH - 40), rng.randint(40, 132), rng.uniform(0.50, 1.02), rng.uniform(5.0, 10.0), rng.random() * 0.5)
+        sparkles = [(rng.randint(0, WIDTH), rng.randint(10, 190), rng.randint(1, 2), rng.random(), cloud if i % 2 else haze) for i in range(20)]
+
+    return {
+        "base": base,
+        "static": static.convert_alpha(),
+        "clouds": clouds,
+        "sparkles": sparkles,
+        "ribbons": ribbons,
+        "kind": kind,
+        "haze": haze,
+        "cloud": cloud,
+        "pipe": pipe,
+        "pipe_dark": pipe_dark,
+    }
 def draw_round_rect(surf: pygame.Surface, color, rect, radius: int = 18, width: int = 0):
     rect = pygame.Rect(rect)
     if width:
+        pygame.draw.rect(surf, color, rect, width=width, border_radius=radius)
         return
 
-    # Glossy filled panel, reused everywhere for a consistent premium UI look.
-    panel = pygame.Surface(rect.size, pygame.SRCALPHA)
-    pygame.draw.rect(panel, color, panel.get_rect(), border_radius=radius)
+    # Cache fully rendered panels so repeated buttons / UI cards stop rebuilding
+    # the same rounded-rect artwork every frame.
+    key = (rect.size, color, radius)
+    panel = _ROUND_RECT_CACHE.get(key)
+    if panel is None:
+        panel = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(panel, color, panel.get_rect(), border_radius=radius)
 
-    # Soft top sheen.
-    top_h = max(5, rect.height // 4)
-    top = pygame.Surface(rect.size, pygame.SRCALPHA)
-    pygame.draw.rect(
-        top,
-        (255, 255, 255, 26),
-        pygame.Rect(4, 4, rect.width - 8, top_h),
-        border_radius=max(2, radius - 4),
-    )
-    pygame.draw.rect(
-        top,
-        (255, 255, 255, 18),
-        pygame.Rect(6, 6, max(8, rect.width // 8), rect.height - 12),
-        border_radius=max(2, radius - 6),
-    )
-
-    # Gentle bottom depth to make the box feel rounded and raised.
-    bottom = pygame.Surface(rect.size, pygame.SRCALPHA)
-    pygame.draw.rect(
-        bottom,
-        (0, 0, 0, 28),
-        pygame.Rect(4, rect.height - top_h - 2, rect.width - 8, top_h + 2),
-        border_radius=max(2, radius - 4),
-    )
-
-    # Diagonal glossy sweep, very subtle so it does not hurt readability.
-    sweep = pygame.Surface((rect.width * 2, rect.height * 2), pygame.SRCALPHA)
-    sx = sweep.get_width() // 2
-    sy = sweep.get_height() // 2
-    for dx in range(-max(6, rect.width // 7), max(6, rect.width // 7) + 1):
-        dist = abs(dx) / float(max(1, rect.width // 7))
-        if dist > 1:
-            continue
-        alpha = int(70 * (1 - dist) ** 1.7)
-        pygame.draw.line(
-            sweep,
-            (255, 255, 255, alpha),
-            (sx + dx - rect.width // 2, 0),
-            (sx + dx - rect.width, sweep.get_height()),
-            1,
+        # Soft top sheen.
+        top_h = max(5, rect.height // 4)
+        top = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(
+            top,
+            (255, 255, 255, 26),
+            pygame.Rect(4, 4, rect.width - 8, top_h),
+            border_radius=max(2, radius - 4),
         )
-    sweep = pygame.transform.rotate(sweep, -18)
+        pygame.draw.rect(
+            top,
+            (255, 255, 255, 18),
+            pygame.Rect(6, 6, max(8, rect.width // 8), rect.height - 12),
+            border_radius=max(2, radius - 6),
+        )
 
-    # Clip everything to the rounded rectangle.
-    clip = pygame.Surface(rect.size, pygame.SRCALPHA)
-    pygame.draw.rect(clip, (255, 255, 255, 255), clip.get_rect(), border_radius=radius)
-    panel.blit(top, (0, 0))
-    panel.blit(bottom, (0, 0))
-    panel.blit(sweep, (-sweep.get_width() // 2 + rect.width // 6, -sweep.get_height() // 2))
-    panel.blit(clip, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        # Gentle bottom depth to make the box feel rounded and raised.
+        bottom = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(
+            bottom,
+            (0, 0, 0, 28),
+            pygame.Rect(4, rect.height - top_h - 2, rect.width - 8, top_h + 2),
+            border_radius=max(2, radius - 4),
+        )
+
+        # Diagonal glossy sweep, very subtle so it does not hurt readability.
+        sweep = pygame.Surface((rect.width * 2, rect.height * 2), pygame.SRCALPHA)
+        sx = sweep.get_width() // 2
+        for dx in range(-max(6, rect.width // 7), max(6, rect.width // 7) + 1):
+            dist = abs(dx) / float(max(1, rect.width // 7))
+            if dist > 1:
+                continue
+            alpha = int(70 * (1 - dist) ** 1.7)
+            pygame.draw.line(
+                sweep,
+                (255, 255, 255, alpha),
+                (sx + dx - rect.width // 2, 0),
+                (sx + dx - rect.width, sweep.get_height()),
+                1,
+            )
+        sweep = pygame.transform.rotate(sweep, -18)
+
+        # Clip everything to the rounded rectangle.
+        clip = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(clip, (255, 255, 255, 255), clip.get_rect(), border_radius=radius)
+        panel.blit(top, (0, 0))
+        panel.blit(bottom, (0, 0))
+        panel.blit(sweep, (-sweep.get_width() // 2 + rect.width // 6, -sweep.get_height() // 2))
+        panel.blit(clip, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        _ROUND_RECT_CACHE[key] = panel
+        _trim_cache(_ROUND_RECT_CACHE, 512)
 
     surf.blit(panel, rect.topleft)
 
@@ -213,7 +368,7 @@ def draw_round_flash(surf: pygame.Surface, rect: pygame.Rect, radius: int, alpha
     surf.blit(flash, rect.topleft)
 
 def draw_text(surf, font, text, pos, color=WHITE, center=False, shadow=True, align: str = "left"):
-    img = font.render(text, True, color)
+    img = render_text_cached(font, text, color)
     rect = img.get_rect()
     align = ("center" if center else align or "left").lower()
     if align == "center":
@@ -223,7 +378,7 @@ def draw_text(surf, font, text, pos, color=WHITE, center=False, shadow=True, ali
     else:
         rect.topleft = pos
     if shadow:
-        shadow_img = font.render(text, True, (0, 0, 0))
+        shadow_img = render_text_cached(font, text, (0, 0, 0))
         shadow_rect = shadow_img.get_rect()
         if align == "center":
             shadow_rect.center = (rect.centerx + 2, rect.centery + 2)
@@ -236,6 +391,18 @@ def draw_text(surf, font, text, pos, color=WHITE, center=False, shadow=True, ali
     return rect
 
 _SYSFONT_CACHE = {}
+_ROUND_RECT_CACHE = {}
+_TEXT_CACHE = {}
+_PARTICLE_CACHE = {}
+_CLOUD_CACHE = {}
+
+
+def _trim_cache(cache: dict, limit: int):
+    while len(cache) > limit:
+        try:
+            cache.pop(next(iter(cache)))
+        except StopIteration:
+            break
 
 def get_cached_sysfont(name: str, size: int, bold: bool = False, italic: bool = False):
     key = (name, size, bold, italic)
@@ -244,6 +411,31 @@ def get_cached_sysfont(name: str, size: int, bold: bool = False, italic: bool = 
         font = pygame.font.SysFont(name, size, bold=bold, italic=italic)
         _SYSFONT_CACHE[key] = font
     return font
+
+
+def render_text_cached(font, text: str, color: Tuple[int, int, int]):
+    key = (id(font), str(text), tuple(color))
+    img = _TEXT_CACHE.get(key)
+    if img is None:
+        img = font.render(str(text), True, color)
+        _TEXT_CACHE[key] = img
+        _trim_cache(_TEXT_CACHE, 1600)
+    return img
+
+
+def get_particle_surface(radius: int, color: Tuple[int, int, int], alpha: int):
+    radius = max(1, int(radius))
+    alpha = max(0, min(255, int(alpha)))
+    bucket = (alpha // 8) * 8
+    key = (radius, color, bucket)
+    surf = _PARTICLE_CACHE.get(key)
+    if surf is None:
+        size = radius * 4
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        pygame.draw.circle(surf, (*color, bucket), (radius * 2, radius * 2), radius)
+        _PARTICLE_CACHE[key] = surf
+        _trim_cache(_PARTICLE_CACHE, 4096)
+    return surf
 
 class SoundBank:
     def __init__(self):
@@ -454,8 +646,7 @@ class SoundBank:
         self.stop_all()
         return False
 
-@dataclass
-@dataclass
+@dataclass(slots=True)
 class Difficulty:
     name: str
     gravity: float
@@ -552,7 +743,7 @@ def boss_item_table(difficulty_name: str, phase: int):
         "support_table": support_tables[name],
     }
 
-@dataclass
+@dataclass(slots=True)
 class Skin:
     name: str
     bird_main: Tuple[int, int, int]
@@ -2370,7 +2561,7 @@ def draw_mask_outline(surf: pygame.Surface, mask: pygame.mask.Mask, topleft: tup
     for bounds in mask.get_bounding_rects():
         draw_round_outline(surf, color, bounds.move(topleft[0], topleft[1]), radius=16, width=width)
 
-@dataclass
+@dataclass(slots=True)
 class Particle:
     x: float
     y: float
@@ -2392,12 +2583,10 @@ class Particle:
             return
         alpha = clamp(self.life / 0.7, 0.0, 1.0)
         radius = max(1, int(self.size * (0.6 + 0.8 * alpha)))
-        overlay = pygame.Surface((radius * 4, radius * 4), pygame.SRCALPHA)
-        c = (*self.color, int(255 * alpha))
-        pygame.draw.circle(overlay, c, (radius * 2, radius * 2), radius)
+        overlay = get_particle_surface(radius, self.color, int(255 * alpha))
         surf.blit(overlay, (self.x - radius * 2, self.y - radius * 2))
 
-@dataclass
+@dataclass(slots=True)
 class FloatingText:
     text: str
     x: float
@@ -2414,11 +2603,11 @@ class FloatingText:
         if self.life <= 0:
             return
         alpha = clamp(self.life / 1.0, 0.0, 1.0)
-        img = font.render(self.text, True, self.color)
+        img = render_text_cached(font, self.text, self.color)
         img.set_alpha(int(255 * alpha))
         surf.blit(img, img.get_rect(center=(self.x, self.y)))
 
-@dataclass
+@dataclass(slots=True)
 class Bird:
     x: float
     y: float
@@ -2576,7 +2765,7 @@ class Bird:
 
             surf.blit(inv, inv.get_rect(center=(self.x, self.y)))
 
-@dataclass
+@dataclass(slots=True)
 class Pipe:
     x: float
     gap_y: float
@@ -2780,7 +2969,7 @@ class Pipe:
             pygame.draw.rect(glow, (*theme["haze"], alpha), (10, int(self.gap_y - self.gap_size * 0.5) + 12, self.width + 10, self.gap_size - 24), border_radius=18)
             surf.blit(glow, (self.x - 15, 0))
 
-@dataclass
+@dataclass(slots=True)
 class Orb:
     x: float
     y: float
@@ -2892,7 +3081,7 @@ class Orb:
         rect = img.get_rect(center=(int(x), int(y)))
         surf.blit(img, rect)
 
-@dataclass
+@dataclass(slots=True)
 class BossProjectile:
     x: float
     y: float
@@ -3228,7 +3417,7 @@ def draw_boss_bar(surf: pygame.Surface, boss, font: pygame.font.Font):
         else:
             pygame.draw.rect(bg, (*accent, tag_alpha), tag_box, border_radius=5)
             pygame.draw.rect(bg, (*core, 120 if i < phase else 60), tag_box, border_radius=5)
-        txt = label_font.render(tag, True, WHITE if i < phase else (220, 230, 240))
+        txt = render_text_cached(label_font, tag, WHITE if i < phase else (220, 230, 240))
         bg.blit(txt, txt.get_rect(center=tag_box.center))
 
     surf.blit(bg, panel.topleft)
@@ -3236,7 +3425,7 @@ def draw_boss_bar(surf: pygame.Surface, boss, font: pygame.font.Font):
     hp_text = f"{max(0, boss.hp)}/{boss.max_hp}"
     draw_text(surf, get_cached_sysfont("arial", 15, bold=True), hp_text, (panel.right - 12, panel.centery - 1), core, center=False, align="right", shadow=False)
 
-@dataclass
+@dataclass(slots=True)
 class Boss:
 
     hp: int
@@ -3909,7 +4098,7 @@ class Boss:
             surf.blit(transition, transition.get_rect(center=rect.center), special_flags=pygame.BLEND_RGBA_ADD)
         draw_boss_bar(surf, self, font)
 
-@dataclass
+@dataclass(slots=True)
 class Cloud:
     x: float
     y: float
@@ -3923,11 +4112,16 @@ class Cloud:
     def draw(self, surf: pygame.Surface, color: Tuple[int, int, int]):
         w = int(90 * self.scale)
         h = int(42 * self.scale)
-        cloud = pygame.Surface((w + 40, h + 20), pygame.SRCALPHA)
-        c = (*color, 180)
-        pygame.draw.ellipse(cloud, c, (8, 10, w * 0.5, h * 0.72))
-        pygame.draw.ellipse(cloud, c, (w * 0.25, 4, w * 0.45, h * 0.95))
-        pygame.draw.ellipse(cloud, c, (w * 0.53, 12, w * 0.40, h * 0.68))
+        key = (w, h, color)
+        cloud = _CLOUD_CACHE.get(key)
+        if cloud is None:
+            cloud = pygame.Surface((w + 40, h + 20), pygame.SRCALPHA)
+            c = (*color, 180)
+            pygame.draw.ellipse(cloud, c, (8, 10, w * 0.5, h * 0.72))
+            pygame.draw.ellipse(cloud, c, (w * 0.25, 4, w * 0.45, h * 0.95))
+            pygame.draw.ellipse(cloud, c, (w * 0.53, 12, w * 0.40, h * 0.68))
+            _CLOUD_CACHE[key] = cloud
+            _trim_cache(_CLOUD_CACHE, 256)
         surf.blit(cloud, (self.x, self.y))
 
 EGG_MESSAGES = [
@@ -3943,7 +4137,14 @@ class Game:
     def __init__(self):
         pygame.init()
         pygame.display.set_caption(GAME_TITLE)
-        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        # ── Resizable window: game always renders at native (WIDTH×HEIGHT) ──
+        # self._window  = the real OS window (resizable / fullscreen)
+        # self.screen   = fixed-size game surface – all draw calls target this
+        self._window = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+        self.screen = pygame.Surface((WIDTH, HEIGHT)).convert()
+        self._fullscreen = False
+        self._cached_game_rect_size: Optional[Tuple[int, int]] = None
+        self._cached_game_rect = pygame.Rect(0, 0, WIDTH, HEIGHT)
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("arial", 22)
         self.font_big = pygame.font.SysFont("arial", 34, bold=True)
@@ -3961,6 +4162,10 @@ class Game:
             self.bg_cache[theme["name"]] = build_gradient_surface(theme["sky_top"], theme["sky_bottom"]).convert()
         for i, theme in enumerate(BOSS_THEMES):
             self.bg_cache[f"BOSS_{i}"] = build_gradient_surface(theme["sky_top"], theme["sky_bottom"]).convert()
+
+        self.arcade_bg_cache = {}
+        for i, theme in enumerate(THEMES):
+            self.arcade_bg_cache[theme["name"]] = build_arcade_background_scene(theme, i)
 
         self.state = "MENU"
         self.running = True
@@ -3985,6 +4190,9 @@ class Game:
         self.menu_scroll = 0.0
         self.overlay_cache = {}
         self.hitbox_overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self._settings_dirty = False
+        self._last_settings_save = 0.0
+        self._settings_save_interval = 0.75
         self.profile_tab = str(self.settings.get("profile_tab", "stats")).lower()
         if self.profile_tab not in ("stats", "quests", "achievements"):
             self.profile_tab = "stats"
@@ -4031,7 +4239,8 @@ class Game:
     def load_settings(self):
         if SAVE_FILE.exists():
             try:
-                return json.loads(SAVE_FILE.read_text(encoding="utf-8"))
+                data = json.loads(SAVE_FILE.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else {}
             except Exception:
                 return {}
         return {}
@@ -4112,7 +4321,13 @@ class Game:
             self.overlay_cache[key] = overlay
         return overlay
 
-    def save_settings(self):
+    def _flush_settings_save(self, force: bool = False):
+        if not self._settings_dirty and not force:
+            return
+        now = pygame.time.get_ticks() / 1000.0
+        if not force and (now - self._last_settings_save) < self._settings_save_interval:
+            return
+
         data = {
             "selected_skin": self.selected_skin,
             "selected_skin_name": SKINS[self.selected_skin].name,
@@ -4132,9 +4347,17 @@ class Game:
             "show_hitboxes": self.show_hitboxes,
         }
         try:
-            SAVE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp_path = SAVE_FILE.with_name(SAVE_FILE.name + ".tmp")
+            tmp_path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            tmp_path.replace(SAVE_FILE)
+            self._last_settings_save = now
+            self._settings_dirty = False
         except Exception:
             pass
+
+    def save_settings(self, force: bool = False):
+        self._settings_dirty = True
+        self._flush_settings_save(force=force)
 
     def default_profile_totals(self):
         return {
@@ -4483,7 +4706,7 @@ class Game:
             self.save_settings()
 
         pressed_left = pygame.mouse.get_pressed(num_buttons=3)[0]
-        mouse_pos = pygame.mouse.get_pos()
+        mouse_pos = self._game_mouse_pos()
 
         draw_text(surf, self.font_huge, "Profile", (WIDTH // 2, 44), WHITE, center=True)
         draw_text(surf, self.font, "Stats - Quests - Achievements", (WIDTH // 2, 84), (220, 230, 240), center=True, shadow=False)
@@ -4900,7 +5123,7 @@ class Game:
         return any(r == rect for r, t in self.button_fx)
 
     def is_button_hovered(self, rect: pygame.Rect) -> bool:
-        return rect.collidepoint(pygame.mouse.get_pos())
+        return rect.collidepoint(self._game_mouse_pos())
 
     def draw_button_shine(self, surf: pygame.Surface, rect: pygame.Rect, radius: int):
         cycle = 5.0
@@ -5535,7 +5758,7 @@ class Game:
             badge = pygame.Rect(12, height // 2 - 16, 32, 32)
             pygame.draw.rect(panel, (*badge_fill, min(255, alpha)), badge, border_radius=12)
             pygame.draw.rect(panel, (*edge, min(255, alpha)), badge, width=2, border_radius=12)
-            badge_label = badge_font.render(badge_text, True, WHITE)
+            badge_label = render_text_cached(badge_font, badge_text, WHITE)
             badge_label.set_alpha(alpha)
             panel.blit(badge_label, badge_label.get_rect(center=badge.center))
 
@@ -6622,30 +6845,86 @@ class Game:
                 draw_boss_cinematic_fx(surf, theme, bg_kind, self.boss, t)
             return
 
-        theme = THEMES[self.theme_index % len(THEMES)]
-        cloud = theme["cloud"]
-        surf.blit(self.bg_cache[theme["name"]], (0, 0))
-        if theme["name"] == "DAWN":
-            for i in range(6):
-                x = 80 + i * 150 + int(math.sin(t * 0.5 + i) * 14)
-                pygame.draw.ellipse(surf, cloud, (x, 54, 118, 40))
-        elif theme["name"] == "NIGHT":
-            for i in range(34):
-                x = (i * 31 + int(t * 14)) % WIDTH
-                y = (i * 57 + int(t * 9)) % (HEIGHT - 60) + 18
-                pygame.draw.circle(surf, cloud, (x, y), 1)
-        elif theme["name"] == "EMBER":
-            for i in range(12):
-                x = (i * 78 + int(t * 24)) % WIDTH
-                pygame.draw.line(surf, theme["haze"], (x, 0), (x + 20, HEIGHT), 1)
-        else:
-            for i in range(8):
-                x = 70 + i * 108 + int(math.sin(t * 0.9 + i) * 20)
-                y = 70 + (i % 2) * 42
-                pts = [(x, y + 40), (x + 26, y + 8), (x + 60, y + 36), (x + 32, y + 76), (x - 10, y + 62)]
-                pygame.draw.polygon(surf, theme["pipe_dark"] if i % 2 else theme["pipe"], pts)
-        pygame.draw.rect(surf, theme["ground"], (0, HEIGHT - 72, WIDTH, 72))
-        pygame.draw.rect(surf, theme["pipe"], (0, HEIGHT - 72, WIDTH, 10))
+        theme = self.current_theme()
+        scene = self.arcade_bg_cache[theme["name"]]
+        surf.blit(scene["base"], (0, 0))
+        surf.blit(scene["static"], (0, 0))
+
+        kind = scene["kind"]
+        haze = scene["haze"]
+        cloud = scene["cloud"]
+        pipe = scene["pipe"]
+        pipe_dark = scene["pipe_dark"]
+
+        # Gentle motion layer: only a few animated elements per frame.
+        for i, (cloud_surf, seed_x, y, speed, phase) in enumerate(scene["clouds"]):
+            x = ((seed_x - t * speed) % (WIDTH + 240)) - 120
+            yy = y + math.sin(t * 0.34 + phase + i * 0.18) * (2.0 + i * 0.4)
+            surf.blit(cloud_surf, (int(x), int(yy)))
+
+        if kind == "DAWN":
+            # Warm shimmer on the horizon.
+            shimmer = 0.5 + 0.5 * math.sin(t * 0.55)
+            pygame.draw.line(surf, haze, (0, 286), (WIDTH, 278), 2)
+            pygame.draw.line(surf, theme["cloud"], (0, 272), (WIDTH, 268), 1)
+            for i in range(7):
+                x = 70 + i * 132 + int(math.sin(t * 0.8 + i) * 9)
+                y = 116 + int(math.sin(t * 1.2 + i) * 4)
+                pygame.draw.circle(surf, haze, (x, y), 2 if i % 3 == 0 else 1)
+            for i, (sx, sy, size, phase, col) in enumerate(scene["sparkles"]):
+                if (i + int(t * 2.0)) % 3 == 0:
+                    continue
+                alpha_size = size + (1 if shimmer > 0.7 and i % 2 == 0 else 0)
+                pygame.draw.circle(surf, col, (int((sx + t * 6) % WIDTH), int(sy + math.sin(t * 0.9 + phase * 6.0) * 2)), alpha_size)
+
+        elif kind == "NIGHT":
+            # Mild parallax twinkles and drifting nocturnal mist.
+            for i, (sx, sy, size, phase, col) in enumerate(scene["sparkles"]):
+                flicker = 0.5 + 0.5 * math.sin(t * (1.1 + (i % 3) * 0.07) + phase * math.tau)
+                if flicker < 0.42:
+                    continue
+                pygame.draw.circle(surf, col, (sx, sy), 1 if size == 1 else 2)
+            for i in range(3):
+                x = 104 + i * 286 + int(math.sin(t * 0.35 + i) * 18)
+                y = 148 + (i % 2) * 14
+                pygame.draw.arc(surf, haze, (x - 84, y - 18, 172, 56), 0.18, 2.95, 2)
+            pygame.draw.line(surf, pipe_dark, (0, 406), (WIDTH, 390), 1)
+            pygame.draw.line(surf, pipe, (0, 410), (WIDTH, 398), 1)
+
+        elif kind == "EMBER":
+            # Floating ash and heat ripples.
+            for i, (sx, sy, size, phase, col) in enumerate(scene["sparkles"]):
+                yy = sy - int((t * (18 + (i % 4) * 3)) % (HEIGHT + 40))
+                xx = int((sx + math.sin(t * 0.8 + phase * 8.0) * 18) % WIDTH)
+                if yy < -20:
+                    yy += HEIGHT + 40
+                pygame.draw.circle(surf, col, (xx, yy), size)
+            for i in range(4):
+                x = 92 + i * 206 + int(math.sin(t * 1.8 + i) * 11)
+                pygame.draw.arc(surf, haze, (x - 64, 34, 132, 68), 0.22, 2.76, 2)
+            for i in range(10):
+                x = (i * 101 + int(t * 48)) % (WIDTH + 120) - 60
+                pygame.draw.line(surf, pipe_dark, (x, HEIGHT - 122), (x + 26, HEIGHT - 76), 2)
+
+        else:  # AURORA
+            # Slow sweeping light curtains with subtle gliding sparks.
+            for i, band in enumerate(scene["ribbons"]):
+                offset = math.sin(t * (0.45 + i * 0.08) + i * 1.3) * (10 + i * 2)
+                shifted = [(x + int(offset), y + int(math.sin(t * 0.2 + x * 0.01) * 2)) for x, y in band]
+                pygame.draw.lines(surf, haze if i != 1 else cloud, False, shifted, 2)
+            sweep_x = int((math.sin(t * 0.28) * 0.5 + 0.5) * (WIDTH + 220)) - 110
+            pygame.draw.arc(surf, haze, (sweep_x - 160, 38, 320, 118), 0.12, 2.96, 2)
+            for i, (sx, sy, size, phase, col) in enumerate(scene["sparkles"]):
+                if (i + int(t * 3)) % 4 == 0:
+                    continue
+                yy = sy + int(math.sin(t * 0.8 + phase * 6.0) * 4)
+                pygame.draw.circle(surf, col, (sx, yy), size)
+
+        # Finish with a slim ground strip to keep the horizon crisp.
+        pygame.draw.rect(surf, pipe_dark, (0, HEIGHT - 14, WIDTH, 14))
+        pygame.draw.rect(surf, pipe, (0, HEIGHT - 14, WIDTH, 4))
+
+
 
     def draw_ui(self, surf: pygame.Surface):
         theme = self.current_theme()
@@ -6801,7 +7080,7 @@ class Game:
             t.draw(surf, self.font)
 
     def draw_play(self):
-        surf = self.screen.copy()
+        surf = self.screen
         self.draw_background(surf)
         # ── Boss environment background layer ─────────────────────────────────
         if self.boss_mode:
@@ -7021,7 +7300,7 @@ class Game:
         self.draw_button_shine(surf, close_rect, 11)
         self.draw_pulse_overlay(surf, close_rect, 11, hovered=hovered, flash=close_flash, phase_shift=0.7)
         x_font = get_cached_sysfont("arial", 18, bold=True)
-        x_img = x_font.render("X", True, WHITE)
+        x_img = render_text_cached(x_font, "X", WHITE)
         surf.blit(x_img, x_img.get_rect(center=close_rect.center))
 
         for i, item in enumerate(self.option_items()):
@@ -8186,18 +8465,76 @@ class Game:
             t.update(dt)
         self.texts = [t for t in self.texts if t.life > 0]
 
+    # ── Letterbox / scaling helpers ───────────────────────────────────────────
+
+    def _game_rect(self) -> pygame.Rect:
+        """Return the letterboxed game area (aspect-ratio-correct) inside the real window."""
+        ww, wh = self._window.get_size()
+        current_size = (ww, wh)
+        if self._cached_game_rect_size == current_size:
+            return self._cached_game_rect
+
+        scale = min(ww / WIDTH, wh / HEIGHT)
+        sw, sh = max(1, int(WIDTH * scale)), max(1, int(HEIGHT * scale))
+        ox, oy = (ww - sw) // 2, (wh - sh) // 2
+        self._cached_game_rect = pygame.Rect(ox, oy, sw, sh)
+        self._cached_game_rect_size = current_size
+        return self._cached_game_rect
+
+    def _remap_mouse_event(self, event: pygame.event.Event) -> pygame.event.Event:
+        """Translate a mouse event's position from window coords → game coords."""
+        if event.type not in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
+            return event
+        rect = self._game_rect()
+        if rect.width == 0 or rect.height == 0:
+            return event
+        raw = event.pos
+        gx = int((raw[0] - rect.x) * WIDTH / rect.width)
+        gy = int((raw[1] - rect.y) * HEIGHT / rect.height)
+        d = {**event.__dict__, "pos": (gx, gy)}
+        return pygame.event.Event(event.type, d)
+
+    def _game_mouse_pos(self) -> Tuple[int, int]:
+        """Return current mouse position mapped to game (960×540) coordinates."""
+        rect = self._game_rect()
+        raw = pygame.mouse.get_pos()
+        if rect.width == 0 or rect.height == 0:
+            return raw
+        gx = int((raw[0] - rect.x) * WIDTH / rect.width)
+        gy = int((raw[1] - rect.y) * HEIGHT / rect.height)
+        return (gx, gy)
+
+    def _toggle_fullscreen(self):
+        """Toggle between resizable-windowed and borderless fullscreen."""
+        self._fullscreen = not self._fullscreen
+        if self._fullscreen:
+            self._window = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        else:
+            self._window = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+        self._cached_game_rect_size = None
+
     def main_loop(self):
         self.reset_world()
         while self.running:
-            dt = self.clock.tick(FPS) / 1000.0
+            dt = min(self.clock.tick(FPS) / 1000.0, 1.0 / 45.0)
             if self.state == "PLAY" and hasattr(self, "time_scale"):
                 dt *= self.time_scale
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
+                    continue
+
+                # ── F11: toggle fullscreen ────────────────────────────────
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                    self._toggle_fullscreen()
+                    continue
+
+                # ── Remap mouse positions from window space → game space ──
+                event = self._remap_mouse_event(event)
+
                 # ── Easter egg: 3 + 6 in any non-gameplay state ──────────
-                elif self.state not in ("PLAY", "PAUSE", "GAME_OVER", "CLEAR", "MATRIX_EGG"):
+                if self.state not in ("PLAY", "PAUSE", "GAME_OVER", "CLEAR", "MATRIX_EGG"):
                     if event.type == pygame.KEYDOWN:
                         pressed = pygame.key.get_pressed()
                         if (event.key == pygame.K_3 and pressed[pygame.K_6]) or \
@@ -8292,9 +8629,20 @@ class Game:
             elif self.state == "CLEAR":
                 self.draw_play()
 
+            # ── Letterbox blit: avoid rescaling when the window is already native ──
+            grect = self._game_rect()
+            self._window.fill((0, 0, 0))
+            if grect.size == self.screen.get_size():
+                self._window.blit(self.screen, grect.topleft)
+            else:
+                scaled = pygame.transform.smoothscale(self.screen, grect.size)
+                self._window.blit(scaled, grect.topleft)
             pygame.display.flip()
 
-        self.save_settings()
+            # Save any pending settings in the background between frames.
+            self._flush_settings_save()
+
+        self.save_settings(force=True)
         pygame.quit()
 
 if __name__ == "__main__":
