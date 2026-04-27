@@ -8677,11 +8677,11 @@ class Game:
                 # ── Remap mouse positions from window space → game space ──
                 event = self._remap_mouse_event(event)
 
-                # ── Easter egg: only 3 then 6 in any non-gameplay state ─────
+                # ── Easter egg: bấm 3 GIỮ rồi bấm 6 (đúng thứ tự, không nhớ sau khi nhả) ──
                 if self.state not in ("PLAY", "PAUSE", "GAME_OVER", "CLEAR", "MATRIX_EGG"):
-                    if event.type == pygame.KEYDOWN:
+                    if event.type == pygame.KEYDOWN and event.key == pygame.K_6:
                         pressed = pygame.key.get_pressed()
-                        if event.key == pygame.K_3 and pressed[pygame.K_6]:
+                        if pressed[pygame.K_3]:
                             self._start_matrix_egg()
                             continue
                     if self.state == "MENU":
