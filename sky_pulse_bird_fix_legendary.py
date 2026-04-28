@@ -418,6 +418,54 @@ def _trim_cache(cache: dict, limit: int):
         except StopIteration:
             break
 
+
+def fast_rotate_surface(surface: pygame.Surface, angle: float) -> pygame.Surface:
+    """Rotate only when necessary; avoids the extra scaling work of rotozoom."""
+    angle = float(angle)
+    if -1e-9 < angle < 1e-9:
+        return surface
+    return pygame.transform.rotate(surface, angle)
+
+
+def retain_positive_life(items):
+    """Compact an in-memory list of objects that expose a positive `life` field."""
+    write = 0
+    for item in items:
+        if item.life > 0:
+            items[write] = item
+            write += 1
+    del items[write:]
+
+
+def retain_active_orbs(items):
+    """Compact orbit/item lists while preserving their current order."""
+    write = 0
+    for item in items:
+        if item.active and item.x > -80:
+            items[write] = item
+            write += 1
+    del items[write:]
+
+
+def retain_projectiles(items):
+    """Compact projectile lists using the same culling window as the original code."""
+    write = 0
+    for item in items:
+        if -80 < item.x < WIDTH + 80 and -80 < item.y < HEIGHT + 80:
+            items[write] = item
+            write += 1
+    del items[write:]
+
+
+def retain_clouds(items):
+    """Compact cloud lists without allocating a fresh list every frame."""
+    write = 0
+    for item in items:
+        if item.x > -180:
+            items[write] = item
+            write += 1
+    del items[write:]
+
 def get_pipe_gap_ring_surface(
     size: tuple[int, int],
     phase: int,
@@ -2855,7 +2903,7 @@ class FloatingText:
         if self.life <= 0:
             return
         alpha = clamp(self.life / 1.0, 0.0, 1.0)
-        img = render_text_cached(font, self.text, self.color)
+        img = render_text_cached(font, self.text, self.color).copy()
         img.set_alpha(int(255 * alpha))
         surf.blit(img, img.get_rect(center=(self.x, self.y)))
 
@@ -2904,7 +2952,8 @@ class Bird:
         cx = cy = r * 2
         flap = 0.5 + 0.5 * math.sin(self.wing_phase * 2.0)
         wing_raise = 1 if math.sin(self.wing_phase) > 0 else -1
-        body = get_bird_body_surface(skin, r).copy()
+        body = get_clear_surface((r * 4, r * 4), ("bird_draw", skin.name, r))
+        body.blit(get_bird_body_surface(skin, r), (0, 0))
 
         wing_pts = [
             (cx - 2, cy + 1),
@@ -2914,7 +2963,7 @@ class Bird:
         ]
         pygame.draw.polygon(body, skin.bird_alt, wing_pts)
 
-        img = pygame.transform.rotozoom(body, angle, 1.0)
+        img = fast_rotate_surface(body, angle)
         rect = img.get_rect(center=(self.x, self.y))
         surf.blit(img, rect)
 
@@ -3022,6 +3071,9 @@ class Pipe:
         top_rect, bot_rect = self.colliders()
         top_color = theme["pipe"]
         dark = theme["pipe_dark"]
+        highlight_color = rgb_lerp(top_color, WHITE, 0.30)
+        sheen_color = rgb_lerp(top_color, WHITE, 0.14)
+        glow_color = rgb_lerp(theme["haze"], WHITE, 0.12)
 
         def draw_pipe_part(rect: pygame.Rect, flip: bool):
             if rect.height <= 0:
@@ -3038,10 +3090,10 @@ class Pipe:
             lip2 = lip.inflate(-8, -6)
             pygame.draw.rect(surf, top_color, lip2, border_radius=8)
 
-            # Keep the arcade-like finish, but let boss stages reshape the details.
-            highlight = get_clear_surface((rect.width, rect.height), ("pipe_highlight", rect.width, rect.height))
-            alpha = 36 + int(40 * pulse)
-            pygame.draw.rect(highlight, (255, 255, 255, alpha), (6, 8, 10, max(8, rect.height - 16)), border_radius=5)
+            # The original effect used an alpha surface here. Drawing the sheen
+            # directly keeps the look while avoiding a per-height cache churn.
+            pygame.draw.rect(surf, highlight_color, (rect.x + 6, rect.y + 8, 10, max(8, rect.height - 16)), border_radius=5)
+            pygame.draw.line(surf, sheen_color, (rect.x + 18, rect.y + 10), (rect.x + 18, rect.bottom - 10), 1)
 
             if boss_spec is not None:
                 boss_kind = boss_spec.get("art", "aegis")
@@ -3049,131 +3101,124 @@ class Pipe:
                 accent = boss_spec["accent"]
                 core = boss_spec["core"]
                 body = boss_spec["body"]
-                boss_overlay = get_clear_surface((rect.width, rect.height), ("pipe_boss_overlay", boss_kind, rect.width, rect.height))
                 w = rect.width
                 h = rect.height
                 phase = boss_phase
                 tt = boss_timer
-                cx = w // 2
+                cx = rect.x + w // 2
+                cy = rect.y + h // 2
 
                 # Each boss gets a distinct silhouette treatment while keeping the arcade frame.
                 if boss_kind == "aegis":
-                    pygame.draw.polygon(boss_overlay, (*accent, 160), [(cx, 8), (cx + 16, 18), (cx + 10, 34), (cx - 10, 34), (cx - 16, 18)])
-                    pygame.draw.polygon(boss_overlay, (*core, 130), [(cx, h - 10), (cx + 12, h - 26), (cx, h - 38), (cx - 12, h - 26)])
-                    for y in range(24, h - 18, 28):
-                        pygame.draw.line(boss_overlay, (*body, 160), (8, y), (w - 8, y), 1)
-                    pygame.draw.arc(boss_overlay, (*accent, 180), (10, 18, w - 20, h - 36), 0.2 + tt * 0.8, 2.8 + tt * 0.8, 2)
+                    pygame.draw.polygon(surf, rgb_lerp(accent, WHITE, 0.08), [(cx, rect.y + 8), (cx + 16, rect.y + 18), (cx + 10, rect.y + 34), (cx - 10, rect.y + 34), (cx - 16, rect.y + 18)])
+                    pygame.draw.polygon(surf, rgb_lerp(core, WHITE, 0.08), [(cx, rect.bottom - 10), (cx + 12, rect.bottom - 26), (cx, rect.bottom - 38), (cx - 12, rect.bottom - 26)])
+                    for y in range(rect.y + 24, rect.bottom - 18, 28):
+                        pygame.draw.line(surf, rgb_lerp(body, WHITE, 0.10), (rect.x + 8, y), (rect.right - 8, y), 1)
+                    pygame.draw.arc(surf, rgb_lerp(accent, WHITE, 0.05), (rect.x + 10, rect.y + 18, w - 20, h - 36), 0.2 + tt * 0.8, 2.8 + tt * 0.8, 2)
                 elif boss_kind == "tempest":
-                    for y in range(14, h - 10, 18):
+                    for y in range(rect.y + 14, rect.bottom - 10, 18):
                         offset = int(math.sin(tt * 4.0 + y * 0.1) * 5)
-                        pygame.draw.polygon(boss_overlay, (*accent, 120), [(8, y), (w - 8, y - 6 + offset), (w - 8, y + 8 + offset), (8, y + 14)])
-                    pygame.draw.line(boss_overlay, (*core, 220), (10, 18), (w - 10, h - 24), 2)
-                    pygame.draw.line(boss_overlay, (*core, 220), (w - 18, 18), (18, h - 24), 2)
+                        pygame.draw.polygon(surf, rgb_lerp(accent, WHITE, 0.04), [(rect.x + 8, y), (rect.right - 8, y - 6 + offset), (rect.right - 8, y + 8 + offset), (rect.x + 8, y + 14)])
+                    pygame.draw.line(surf, rgb_lerp(core, WHITE, 0.07), (rect.x + 10, rect.y + 18), (rect.right - 10, rect.bottom - 24), 2)
+                    pygame.draw.line(surf, rgb_lerp(core, WHITE, 0.07), (rect.right - 18, rect.y + 18), (rect.x + 18, rect.bottom - 24), 2)
                 elif boss_kind == "void":
-                    for y in range(18, h - 14, 22):
-                        pygame.draw.arc(boss_overlay, (*accent, 180), (4, y - 10, w - 8, 20), tt * 1.2, tt * 1.2 + 2.8, 2)
-                    pygame.draw.circle(boss_overlay, (*body, 140), (cx, h // 2), max(10, min(w, h) // 4), 2)
-                    pygame.draw.circle(boss_overlay, (*core, 180), (cx, h // 2), 5)
+                    for y in range(rect.y + 18, rect.bottom - 14, 22):
+                        pygame.draw.arc(surf, rgb_lerp(accent, WHITE, 0.05), (rect.x + 4, y - 10, w - 8, 20), tt * 1.2, tt * 1.2 + 2.8, 2)
+                    pygame.draw.circle(surf, rgb_lerp(body, WHITE, 0.08), (cx, cy), max(10, min(w, h) // 4), 2)
+                    pygame.draw.circle(surf, rgb_lerp(core, WHITE, 0.10), (cx, cy), 5)
                 elif boss_kind == "chrono":
-                    for y in range(10, h - 8, 18):
-                        pygame.draw.line(boss_overlay, (*accent, 150), (8, y), (w - 8, y), 1)
+                    for y in range(rect.y + 10, rect.bottom - 8, 18):
+                        pygame.draw.line(surf, rgb_lerp(accent, WHITE, 0.06), (rect.x + 8, y), (rect.right - 8, y), 1)
                     dial_x = cx + int(math.sin(tt * 1.6) * 4)
-                    pygame.draw.circle(boss_overlay, (*core, 180), (dial_x, h // 2), 8, 2)
+                    pygame.draw.circle(surf, rgb_lerp(core, WHITE, 0.10), (dial_x, cy), 8, 2)
                     ang = tt * (1.2 + 0.08 * phase)
-                    pygame.draw.line(boss_overlay, (*body, 200), (dial_x, h // 2), (dial_x + int(math.cos(ang) * 16), h // 2 + int(math.sin(ang) * 16)), 2)
+                    pygame.draw.line(surf, rgb_lerp(body, WHITE, 0.08), (dial_x, cy), (dial_x + int(math.cos(ang) * 16), cy + int(math.sin(ang) * 16)), 2)
                 elif boss_kind == "prism":
-                    for x in range(12, w - 10, 20):
-                        pts = [(x, 8), (x + 8, 18), (x, 30), (x - 8, 18)]
-                        pygame.draw.polygon(boss_overlay, (*accent, 160), pts)
-                    pygame.draw.line(boss_overlay, (*core, 180), (8, h - 10), (w - 8, 10), 1)
-                    pygame.draw.line(boss_overlay, (*core, 180), (8, 10), (w - 8, h - 10), 1)
+                    for x in range(rect.x + 12, rect.right - 10, 20):
+                        pts = [(x, rect.y + 8), (x + 8, rect.y + 18), (x, rect.y + 30), (x - 8, rect.y + 18)]
+                        pygame.draw.polygon(surf, rgb_lerp(accent, WHITE, 0.07), pts)
+                    pygame.draw.line(surf, rgb_lerp(core, WHITE, 0.08), (rect.x + 8, rect.bottom - 10), (rect.right - 8, rect.y + 10), 1)
+                    pygame.draw.line(surf, rgb_lerp(core, WHITE, 0.08), (rect.x + 8, rect.y + 10), (rect.right - 8, rect.bottom - 10), 1)
                 elif boss_kind == "bloom":
-                    for x in range(10, w - 10, 18):
-                        leaf_y = 14 + int((math.sin(tt * 2.4 + x * 0.07) + 1) * 7)
-                        pygame.draw.ellipse(boss_overlay, (*accent, 160), (x - 4, leaf_y, 8, 16))
-                    pygame.draw.arc(boss_overlay, (*core, 180), (8, 6, w - 16, h - 12), 0.2, 2.9, 2)
+                    for x in range(rect.x + 10, rect.right - 10, 18):
+                        leaf_y = rect.y + 14 + int((math.sin(tt * 2.4 + x * 0.07) + 1) * 7)
+                        pygame.draw.ellipse(surf, rgb_lerp(accent, WHITE, 0.06), (x - 4, leaf_y, 8, 16))
+                    pygame.draw.arc(surf, rgb_lerp(core, WHITE, 0.08), (rect.x + 8, rect.y + 6, w - 16, h - 12), 0.2, 2.9, 2)
                 elif boss_kind == "ember":
                     if boss_short == "HELL":
-                        for x in range(8, w - 8, 12):
+                        for x in range(rect.x + 8, rect.right - 8, 12):
                             crack = 10 + int((math.sin(tt * 7.0 + x * 0.18) + 1) * 5)
-                            pygame.draw.line(boss_overlay, (255, 128, 62, 170), (x, 8), (x - crack // 2, h - 8), 2)
-                            pygame.draw.line(boss_overlay, (*core, 70), (x + 2, 14), (x + 2, h - 14), 1)
-                        for y in range(10, h - 8, 16):
+                            pygame.draw.line(surf, (255, 128, 62), (x, rect.y + 8), (x - crack // 2, rect.bottom - 8), 2)
+                            pygame.draw.line(surf, rgb_lerp(core, WHITE, 0.04), (x + 2, rect.y + 14), (x + 2, rect.bottom - 14), 1)
+                        for y in range(rect.y + 10, rect.bottom - 8, 16):
                             flame = 6 + int((math.sin(tt * 4.2 + y * 0.12) + 1) * 5)
-                            pygame.draw.polygon(boss_overlay, (255, 110, 42, 170), [(8, y), (w - 8, y - flame), (w - 8, y + 8), (8, y + 14)])
+                            pygame.draw.polygon(surf, (255, 110, 42), [(rect.x + 8, y), (rect.right - 8, y - flame), (rect.right - 8, y + 8), (rect.x + 8, y + 14)])
                         for i in range(6):
                             px = cx + int(math.sin(tt * 5.5 + i) * (w * 0.18))
-                            py = h // 2 + int(math.cos(tt * 4.5 + i) * (h * 0.12))
-                            pygame.draw.circle(boss_overlay, (255, 236, 196, 150), (px, py), 2)
+                            py = cy + int(math.cos(tt * 4.5 + i) * (h * 0.12))
+                            pygame.draw.circle(surf, rgb_lerp(core, WHITE, 0.12), (px, py), 2)
                     else:
-                        for x in range(10, w - 10, 16):
+                        for x in range(rect.x + 10, rect.right - 10, 16):
                             crack = 12 + int((math.sin(tt * 6.0 + x * 0.15) + 1) * 4)
-                            pygame.draw.line(boss_overlay, (*accent, 150), (x, 8), (x - crack // 2, h - 8), 1)
-                            pygame.draw.line(boss_overlay, (*core, 90), (x + 4, 14), (x + 2, h - 14), 1)
+                            pygame.draw.line(surf, rgb_lerp(accent, WHITE, 0.05), (x, rect.y + 8), (x - crack // 2, rect.bottom - 8), 1)
+                            pygame.draw.line(surf, rgb_lerp(core, WHITE, 0.04), (x + 4, rect.y + 14), (x + 2, rect.bottom - 14), 1)
                 elif boss_kind == "tide":
-                    for y in range(12, h - 8, 16):
-                        wave = 4 + int(math.sin(tt * 2.6 + y * 0.15) * 3)
-                        pygame.draw.arc(boss_overlay, (*accent, 170), (4, y - 6, w - 8, 16), 0.0, math.pi, 2)
-                        pygame.draw.arc(boss_overlay, (*core, 120), (10, y - 2, w - 20, 10), 0.0, math.pi, 1)
+                    for y in range(rect.y + 12, rect.bottom - 8, 16):
+                        pygame.draw.arc(surf, rgb_lerp(accent, WHITE, 0.06), (rect.x + 4, y - 6, w - 8, 16), 0.0, math.pi, 2)
+                        pygame.draw.arc(surf, rgb_lerp(core, WHITE, 0.05), (rect.x + 10, y - 2, w - 20, 10), 0.0, math.pi, 1)
                 elif boss_kind == "frost":
-                    cap = pygame.Rect(6, 6, w - 12, 16)
-                    pygame.draw.rect(boss_overlay, (*core, 135), cap, border_radius=7)
-                    for x in range(10, w - 10, 18):
+                    cap = pygame.Rect(rect.x + 6, rect.y + 6, w - 12, 16)
+                    pygame.draw.rect(surf, rgb_lerp(core, WHITE, 0.08), cap, border_radius=7)
+                    for x in range(rect.x + 10, rect.right - 10, 18):
                         tip = 6 + int((math.sin(tt * 3.2 + x * 0.12) + 1) * 4)
-                        pygame.draw.polygon(boss_overlay, (*accent, 160), [(x, h - 8), (x - 6, h - 8 - tip), (x + 6, h - 8 - tip)])
+                        pygame.draw.polygon(surf, rgb_lerp(accent, WHITE, 0.06), [(x, rect.bottom - 8), (x - 6, rect.bottom - 8 - tip), (x + 6, rect.bottom - 8 - tip)])
                     for i in range(4):
-                        sx = 10 + i * (w - 20) / 3
-                        pygame.draw.circle(boss_overlay, (*core, 140), (int(sx), h // 2), 2)
+                        sx = rect.x + 10 + i * (w - 20) / 3
+                        pygame.draw.circle(surf, rgb_lerp(core, WHITE, 0.08), (int(sx), cy), 2)
                 elif boss_kind == "stellar":
                     for i in range(4):
                         ang = tt * 0.9 + i * (math.tau / 4)
                         px = cx + int(math.cos(ang) * (18 + i * 3))
-                        py = h // 2 + int(math.sin(ang) * (10 + i * 2))
-                        pygame.draw.circle(boss_overlay, (*accent, 180), (px, py), 4)
-                    pygame.draw.line(boss_overlay, (*core, 180), (8, h // 2), (w - 8, h // 2), 2)
-                    pygame.draw.line(boss_overlay, (*body, 140), (cx, 8), (cx, h - 8), 2)
+                        py = cy + int(math.sin(ang) * (10 + i * 2))
+                        pygame.draw.circle(surf, rgb_lerp(accent, WHITE, 0.08), (px, py), 4)
+                    pygame.draw.line(surf, rgb_lerp(core, WHITE, 0.08), (rect.x + 8, cy), (rect.right - 8, cy), 2)
+                    pygame.draw.line(surf, rgb_lerp(body, WHITE, 0.05), (cx, rect.y + 8), (cx, rect.bottom - 8), 2)
                 elif boss_kind == "obsidian":
-                    for x in range(8, w - 8, 16):
+                    for x in range(rect.x + 8, rect.right - 8, 16):
                         hx = x + int(math.sin(tt * 2.5 + x * 0.2) * 3)
-                        pygame.draw.polygon(boss_overlay, (*body, 170), [(hx, 8), (hx + 8, 20), (hx + 2, h - 8), (hx - 8, 20)])
-                    pygame.draw.line(boss_overlay, (*accent, 160), (8, h - 14), (w - 8, 14), 2)
+                        pygame.draw.polygon(surf, rgb_lerp(body, WHITE, 0.05), [(hx, rect.y + 8), (hx + 8, rect.y + 20), (hx + 2, rect.bottom - 8), (hx - 8, rect.y + 20)])
+                    pygame.draw.line(surf, rgb_lerp(accent, WHITE, 0.05), (rect.x + 8, rect.bottom - 14), (rect.right - 8, rect.y + 14), 2)
                 else:  # aurora
-                    for y in range(8, h - 8, 10):
+                    for y in range(rect.y + 8, rect.bottom - 8, 10):
                         offset = int(math.sin(tt * 2.0 + y * 0.08) * 6)
-                        pygame.draw.arc(boss_overlay, (*accent, 120), (4 + offset, y - 6, w - 8, 16), 0.0, math.pi, 2)
-                    pygame.draw.arc(boss_overlay, (*core, 180), (10, 8, w - 20, h - 16), 0.1 + tt * 0.3, 2.9 + tt * 0.3, 2)
+                        pygame.draw.arc(surf, rgb_lerp(accent, WHITE, 0.05), (rect.x + 4 + offset, y - 6, w - 8, 16), 0.0, math.pi, 2)
+                    pygame.draw.arc(surf, rgb_lerp(core, WHITE, 0.08), (rect.x + 10, rect.y + 8, w - 20, h - 16), 0.1 + tt * 0.3, 2.9 + tt * 0.3, 2)
 
-                phase_energy = get_clear_surface((w, h), ("pipe_phase_energy", boss_kind, w, h))
-                phase_alpha = 42 + int(24 * max(0, phase - 1)) + int(28 * (1.0 - clamp(tt / 1.0, 0.0, 1.0)))
                 for i in range(phase):
-                    yy = 18 + i * max(8, h // max(2, phase + 1))
-                    pygame.draw.line(phase_energy, (*accent, min(180, phase_alpha + i * 12)), (8, yy), (w - 8, yy + int(math.sin(tt * (2.3 + i * 0.5)) * 4)), 2)
+                    yy = rect.y + 18 + i * max(8, h // max(2, phase + 1))
+                    pygame.draw.line(surf, rgb_lerp(accent, WHITE, 0.12), (rect.x + 8, yy), (rect.right - 8, yy + int(math.sin(tt * (2.3 + i * 0.5)) * 4)), 2)
                 if phase >= 2:
                     for i in range(3):
                         ang = tt * 2.6 + i * (math.tau / 3)
-                        x1 = w * 0.5 + int(math.cos(ang) * 14)
-                        y1 = h * 0.5 + int(math.sin(ang) * 8)
-                        x2 = w * 0.5 + int(math.cos(ang) * (w * 0.42))
-                        y2 = h * 0.5 + int(math.sin(ang) * (h * 0.34))
-                        pygame.draw.line(phase_energy, (*core, 90 + int(35 * phase)), (x1, y1), (x2, y2), 1)
+                        x1 = rect.x + w * 0.5 + int(math.cos(ang) * 14)
+                        y1 = rect.y + h * 0.5 + int(math.sin(ang) * 8)
+                        x2 = rect.x + w * 0.5 + int(math.cos(ang) * (w * 0.42))
+                        y2 = rect.y + h * 0.5 + int(math.sin(ang) * (h * 0.34))
+                        pygame.draw.line(surf, rgb_lerp(core, WHITE, 0.06), (x1, y1), (x2, y2), 1)
                 if phase >= 3:
                     for i in range(6):
-                        x0 = 12 + i * (w - 24) // 6
-                        pygame.draw.circle(phase_energy, (*core, 100), (x0, 14 + (i % 2) * (h - 28)), 2)
-                boss_overlay.blit(phase_energy, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
-
-                surf.blit(boss_overlay, rect.topleft)
-
-            surf.blit(highlight, rect.topleft)
+                        x0 = rect.x + 12 + i * (w - 24) // 6
+                        pygame.draw.circle(surf, rgb_lerp(core, WHITE, 0.08), (x0, rect.y + 14 + (i % 2) * (h - 28)), 2)
 
         draw_pipe_part(top_rect, False)
         draw_pipe_part(bot_rect, True)
 
         if self.variant > 0:
-            glow = get_clear_surface((self.width + 30, HEIGHT), ("pipe_glow", self.width, HEIGHT))
-            alpha = 45 + int(45 * pulse)
-            pygame.draw.rect(glow, (*theme["haze"], alpha), (10, int(self.gap_y - self.gap_size * 0.5) + 12, self.width + 10, self.gap_size - 24), border_radius=18)
-            surf.blit(glow, (self.x - 15, 0))
+            # Small glow at the gap. Direct drawing is cheaper than creating a
+            # separate alpha surface every frame.
+            gap_top = int(self.gap_y - self.gap_size * 0.5) + 12
+            gap_h = max(12, self.gap_size - 24)
+            pygame.draw.rect(surf, glow_color, (self.x - 5, gap_top, self.width + 10, gap_h), border_radius=18)
 
 @dataclass(slots=True)
 class Orb:
@@ -3215,7 +3260,7 @@ class Orb:
 
         phase_bucket = int((self.phase % math.tau) / math.tau * ORB_PHASE_BUCKETS)
         outer = get_orb_body_surface(self.kind, color, phase_bucket)
-        img = pygame.transform.rotozoom(outer, rot, 1.0)
+        img = fast_rotate_surface(outer, rot)
         rect = img.get_rect(center=(int(x), int(y)))
         surf.blit(img, rect)
 
@@ -3417,7 +3462,7 @@ def draw_boss_bar(surf: pygame.Surface, boss, font: pygame.font.Font):
     transition_flash = 1.0 - ease_out_cubic(clamp(transition_progress, 0.0, 1.0))
     phase_glow = 0.22 + 0.14 * (phase - 1) + 0.34 * transition_flash
 
-    bg = pygame.Surface((bar_w, bar_h), pygame.SRCALPHA)
+    bg = get_clear_surface((bar_w, bar_h), ("boss_bar_bg", boss.boss_id, bar_w, bar_h))
     if is_hell:
         draw_round_rect(bg, (26, 10, 10, 235), bg.get_rect(), radius=18)
         draw_round_rect(bg, (88, 18, 14, 205), bg.get_rect(), radius=18, width=2)
@@ -3507,7 +3552,7 @@ def draw_boss_bar(surf: pygame.Surface, boss, font: pygame.font.Font):
             pygame.draw.arc(bg, (*core, 220), pygame.Rect(10, 8, max(28, fill_w - 20), bar_h - 16), 0.6, 5.6, 2)
 
         if transition_flash > 0:
-            over = pygame.Surface((fill_w + 24, bar_h + 16), pygame.SRCALPHA)
+            over = get_clear_surface((fill_w + 24, bar_h + 16), ("boss_bar_transition", boss.boss_id, fill_w, bar_h))
             pygame.draw.circle(over, (*accent, int(145 * transition_flash)), (fill_w // 2 + 12, bar_h // 2 + 8), 18 + int(24 * transition_flash), 3)
             pygame.draw.circle(over, (*core, int(190 * transition_flash)), (fill_w // 2 + 12, bar_h // 2 + 8), 8 + int(12 * transition_flash), 2)
             pygame.draw.line(over, (*core, int(150 * transition_flash)), (6, 8), (fill_w + 16, bar_h + 6), 2)
@@ -3699,7 +3744,7 @@ class Boss:
         oy = int(math.cos(self.death_timer * 7.5) * (3 + 8 * (1.0 - progress)))
         surf.blit(img, img.get_rect(center=(self.x + ox, self.y + oy)))
 
-        fx = pygame.Surface((520, 380), pygame.SRCALPHA)
+        fx = get_clear_surface((520, 380), ("boss_death_fx", spec.get("short", spec.get("art", "aegis"))))
         cx = 260
         cy = 190
         accent = spec["accent"]
@@ -4224,7 +4269,7 @@ class Boss:
         img, rect = draw_boss_body_surface(spec, self)
         surf.blit(img, rect)
         if self.phase_changed or (self.phase_transition_duration > 0 and self.phase_transition_timer < self.phase_transition_duration):
-            transition = pygame.Surface((rect.width + 240, rect.height + 240), pygame.SRCALPHA)
+            transition = get_clear_surface((rect.width + 240, rect.height + 240), ("boss_phase_transition", self.boss_id, rect.width, rect.height))
             cx = transition.get_width() // 2
             cy = transition.get_height() // 2
             phase_progress = 0.0
@@ -4486,11 +4531,15 @@ class Game:
         self.save_settings()
 
     def get_overlay(self, size: Tuple[int, int], color: Tuple[int, int, int, int]) -> pygame.Surface:
-        key = (size, color)
+        # Bucket alpha values so animated fades/flash overlays reuse cached
+        # surfaces instead of generating a new full-screen surface every frame.
+        alpha = max(0, min(255, int(color[3])))
+        alpha = (alpha // 8) * 8
+        key = (size, (int(color[0]), int(color[1]), int(color[2]), alpha))
         overlay = self.overlay_cache.get(key)
         if overlay is None:
             overlay = pygame.Surface(size, pygame.SRCALPHA)
-            overlay.fill(color)
+            overlay.fill(key[1])
             self.overlay_cache[key] = overlay
         return overlay
 
@@ -5340,7 +5389,7 @@ class Game:
 
         # Slim, bright diagonal sheen with a premium look.
         shine_w = max(24, int(min(w, h) * 0.22))
-        shine = pygame.Surface((w + shine_w * 2, h + shine_w * 2), pygame.SRCALPHA)
+        shine = get_clear_surface((w + shine_w * 2, h + shine_w * 2), ("button_shine", w, h, radius))
         center_x = shine.get_width() * 0.50 + int((progress - 0.5) * (w * 1.38))
 
         for dx in range(-shine_w, shine_w + 1):
@@ -5352,7 +5401,7 @@ class Game:
             pygame.draw.line(shine, (255, 255, 255, alpha), (x, 0), (x - int(h * 0.46), shine.get_height()), 1)
 
         core_w = max(4, shine_w // 6)
-        core = pygame.Surface(shine.get_size(), pygame.SRCALPHA)
+        core = get_clear_surface(shine.get_size(), ("button_shine_core", w, h, radius))
         for dx in range(-core_w, core_w + 1):
             dist = abs(dx) / float(core_w)
             alpha = int(255 * (1 - dist) ** 1.25)
@@ -5362,13 +5411,13 @@ class Game:
 
         shine = pygame.transform.rotate(shine, -24)
 
-        clip = pygame.Surface(rect.size, pygame.SRCALPHA)
+        clip = get_clear_surface(rect.size, ("button_shine_clip", rect.size, radius))
         pygame.draw.rect(clip, (255, 255, 255, 255), clip.get_rect(), border_radius=radius)
-        temp = pygame.Surface(rect.size, pygame.SRCALPHA)
+        temp = get_clear_surface(rect.size, ("button_shine_temp", rect.size, radius))
         temp.blit(shine, (-shine.get_width() // 2 + pad, -shine.get_height() // 2))
         temp.blit(clip, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
 
-        glow = pygame.Surface(rect.size, pygame.SRCALPHA)
+        glow = get_clear_surface(rect.size, ("button_shine_glow", rect.size, radius))
         glow_rect = pygame.Rect(-int(w * 0.14), int(h * 0.22), int(w * 1.28), max(6, int(h * 0.12)))
         pygame.draw.rect(glow, (255, 255, 255, 18), glow_rect, border_radius=max(2, glow_rect.height // 2))
         glow = pygame.transform.rotate(glow, -24)
@@ -5387,7 +5436,7 @@ class Game:
             base += 18
         if base <= 0:
             return
-        overlay = pygame.Surface(rect.size, pygame.SRCALPHA)
+        overlay = get_clear_surface(rect.size, ("pulse_overlay", rect.size, radius))
         pygame.draw.rect(overlay, (255, 255, 255, min(72, base)), overlay.get_rect(), border_radius=radius)
         surf.blit(overlay, rect.topleft)
 
@@ -5585,7 +5634,7 @@ class Game:
         if self.is_button_flashed(rect):
             draw_round_flash(surf, rect, 14, 62)
 
-        icon = pygame.Surface(rect.size, pygame.SRCALPHA)
+        icon = get_clear_surface(rect.size, ("pause_icon", rect.size, paused, active))
         cx, cy = rect.width // 2, rect.height // 2
         icon_color = WHITE if active else (225, 234, 242)
         if paused:
@@ -5951,12 +6000,13 @@ class Game:
 
             title = str(note["title"]).strip()
             subtitle = str(note["subtitle"]).strip()
+            title_upper = title.upper()
             accent = note["color"]
-            if "QUEST" in title.upper():
+            if "QUEST" in title_upper:
                 accent = rgb_lerp(accent, (120, 255, 190), 0.18)
                 badge_fill = (28, 96, 64)
                 badge_text = "Q"
-            elif "ARCHIEVEMENT" in title.upper() or "ACHIEVEMENT" in title.upper():
+            elif "ARCHIEVEMENT" in title_upper or "ACHIEVEMENT" in title_upper:
                 accent = rgb_lerp(accent, (255, 130, 96), 0.26)
                 badge_fill = (96, 34, 30)
                 badge_text = "A"
@@ -5965,13 +6015,13 @@ class Game:
                 badge_text = "!"
             edge = rgb_lerp(accent, WHITE, 0.22)
             fill = (10, 14, 24)
-            panel = pygame.Surface((width, height), pygame.SRCALPHA)
+            panel = get_clear_surface((width, height), ("notification_panel", width, height))
 
             pygame.draw.rect(panel, (*fill, int(220 * (alpha / 255))), (0, 0, width, height), border_radius=20)
             pygame.draw.rect(panel, (*accent, min(255, alpha)), (0, 0, width, height), width=2, border_radius=20)
             pygame.draw.rect(panel, (255, 255, 255, int(14 * (alpha / 255))), (4, 4, width - 8, max(10, height // 4)), border_radius=16)
 
-            stripe = pygame.Surface((width, height), pygame.SRCALPHA)
+            stripe = get_clear_surface((width, height), ("notification_stripe", width, height))
             stripe_shift = int((now * 80 + i * 22) % 32)
             for sx in range(-40, width + 40, 20):
                 x1 = sx + stripe_shift
@@ -5990,15 +6040,15 @@ class Game:
             badge_label.set_alpha(alpha)
             panel.blit(badge_label, badge_label.get_rect(center=badge.center))
 
-            title_img = font_title.render(title, True, WHITE)
+            title_img = render_text_cached(font_title, title, WHITE).copy()
             title_img.set_alpha(alpha)
             panel.blit(title_img, title_img.get_rect(topleft=(56, 10)))
             if subtitle:
-                subtitle_img = font_sub.render(subtitle, True, WHITE)
+                subtitle_img = render_text_cached(font_sub, subtitle, WHITE).copy()
                 subtitle_img.set_alpha(alpha)
                 panel.blit(subtitle_img, subtitle_img.get_rect(topleft=(56, 34)))
 
-            glow = pygame.Surface((width, height), pygame.SRCALPHA)
+            glow = get_clear_surface((width, height), ("notification_glow", width, height))
             pygame.draw.circle(glow, (*accent, int(48 * (alpha / 255))), (width - 42, height // 2), 28)
             panel.blit(glow, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
 
@@ -6406,7 +6456,7 @@ class Game:
         # Update ambient env particles
         for p in self.env_ambient_particles:
             p.update(dt)
-        self.env_ambient_particles = [p for p in self.env_ambient_particles if p.life > 0]
+        retain_positive_life(self.env_ambient_particles)
 
         # Tick-down to next env event
         self.env_event_timer -= dt
@@ -6902,13 +6952,13 @@ class Game:
             self.boss_clear_timer = self.boss.death_timer
             for p in self.particles:
                 p.update(dt)
-            self.particles[:] = [p for p in self.particles if p.life > 0]
+            retain_positive_life(self.particles)
             for t in self.texts:
                 t.update(dt)
-            self.texts[:] = [t for t in self.texts if t.life > 0]
+            retain_positive_life(self.texts)
             for cloud in self.clouds:
                 cloud.update(dt * 0.35)
-            self.clouds[:] = [c for c in self.clouds if c.x > -180]
+            retain_clouds(self.clouds)
             while len(self.clouds) < 7:
                 self.clouds.append(Cloud(WIDTH + random.uniform(0, 160), random.uniform(40, 260), random.uniform(0.6, 1.4), random.uniform(8, 22), random.randint(0, 2)))
             self.ambient_timer += dt
@@ -6940,30 +6990,35 @@ class Game:
 
         for cloud in self.clouds:
             cloud.update(dt)
-        self.clouds[:] = [c for c in self.clouds if c.x > -180]
+        retain_clouds(self.clouds)
         while len(self.clouds) < 7:
             self.clouds.append(Cloud(WIDTH + random.uniform(0, 160), random.uniform(40, 260), random.uniform(0.6, 1.4), random.uniform(8, 22), random.randint(0, 2)))
 
         pipe_dt = dt
         for pipe in self.pipes:
             pipe.update(pipe_dt, difficulty, self.score)
-        self.pipes[:] = [p for p in self.pipes if p.x + p.width > -80]
+        write = 0
+        for pipe in self.pipes:
+            if pipe.x + pipe.width > -80:
+                self.pipes[write] = pipe
+                write += 1
+        del self.pipes[write:]
 
         for orb in self.orbs:
             orb.update(pipe_dt)
-        self.orbs[:] = [o for o in self.orbs if o.x > -80 and o.active]
+        retain_active_orbs(self.orbs)
 
         for proj in self.projectiles:
             proj.update(dt)
-        self.projectiles[:] = [p for p in self.projectiles if -80 < p.x < WIDTH + 80 and -80 < p.y < HEIGHT + 80]
+        retain_projectiles(self.projectiles)
 
         for p in self.particles:
             p.update(dt)
-        self.particles[:] = [p for p in self.particles if p.life > 0]
+        retain_positive_life(self.particles)
 
         for t in self.texts:
             t.update(dt)
-        self.texts[:] = [t for t in self.texts if t.life > 0]
+        retain_positive_life(self.texts)
 
         if self.boss_mode and self.boss:
             self.boss.update(pipe_dt, difficulty, self.pipes, self.projectiles, self.orbs, self.score)
@@ -7001,6 +7056,7 @@ class Game:
         if self.bird.boost > 0:
             self.add_particle(self.bird.x - 18, self.bird.y + 4, random.uniform(-140, -50), random.uniform(-30, 30), 0.30, random.uniform(2, 4), self.bird.skin().trail, gravity=100.0)
 
+        # Cache bird rect once for collision checks
         bird_rect = self.bird.rect()
         magnet_on = self.active_effects["magnet"] > 0
         for orb in self.orbs:
@@ -7011,7 +7067,8 @@ class Game:
                 dy = self.bird.y - orb.y
                 dist2 = dx * dx + dy * dy
                 if dist2 < 250 * 250 and dist2 > 1:
-                    dist = math.sqrt(dist2)
+                    # Use math.hypot for faster distance calculation
+                    dist = math.hypot(dx, dy)
                     strength = clamp(320 + (250 - dist) * 3.4, 160, 560)
                     orb.x += (dx / dist) * strength * dt
                     orb.y += (dy / dist) * strength * dt * 0.92
@@ -7020,7 +7077,7 @@ class Game:
                 self.spawn_item_fx(orb.kind, orb.x, orb.y, collected=True)
                 self.apply_item(orb.kind, orb.x, orb.y)
 
-        bird_rect = self.bird.rect()
+        # Reuse cached bird_rect for projectile collision
         if self.bird.invuln <= 0:
             for proj in self.projectiles:
                 if bird_rect.colliderect(proj.rect()):
@@ -7451,7 +7508,7 @@ class Game:
         surf.blit(self.get_overlay((WIDTH, HEIGHT), (10, 12, 20, 40)), (0, 0))
 
         title_y = 76
-        title_text = GAME_TITLE if self.menu_page == "MAIN" else "Choose a Mode"
+        title_text = GAME_TITLE if self.menu_page == "MAIN" else "Select Mode"
         draw_text(surf, self.font_huge, title_text, (WIDTH // 2, title_y), (255, 255, 255), center=True)
 
         for i, item in enumerate(self.menu_items):
@@ -7467,7 +7524,7 @@ class Game:
         surf.blit(self.get_overlay((WIDTH, HEIGHT), (6, 10, 18, 80)), (0, 0))
 
         draw_text(surf, self.font_huge, "Skins", (WIDTH // 2, 44), WHITE, center=True)
-        draw_text(surf, self.font_tiny_bold, "A / D / Left / Right or click the arrows to browse", (WIDTH // 2, 92), (235, 240, 248), center=True, shadow=False)
+        draw_text(surf, self.font_micro, "A / D / Left / Right or click the arrows to browse", (WIDTH // 2, 92), (235, 240, 248), center=True, shadow=False)
 
         skin = SKINS[self.skin_cursor]
         unlocked = self.skin_cursor in self.unlocked
@@ -7519,11 +7576,11 @@ class Game:
 
         title = "Select Difficulty"
         if self.difficulty_mode_target == "BOSS":
-            title = "Select Boss Difficulty"
+            title = "Choose Bosses Difficulty"
         draw_text(surf, self.font_huge, title, (WIDTH // 2, 48), WHITE, center=True)
 
         hint = "↑↓ / W-S: Rows   ←→ / A-D: Columns   Enter: Select"
-        draw_text(surf, self.font_small, hint, (WIDTH // 2, 92), (210, 220, 235), center=True, shadow=False)
+        draw_text(surf, self.font_micro, hint, (WIDTH // 2, 92), (210, 220, 235), center=True, shadow=False)
 
         for i, diff in enumerate(DIFFICULTIES):
             rect = self.difficulty_rect(i)
@@ -7624,7 +7681,7 @@ class Game:
             accent=(255, 152, 132),
         )
 
-        draw_text(surf, self.font_tiny_bold, "Enter / click the selected control. Esc or X closes.", (WIDTH // 2, HEIGHT - 30), (235, 240, 248), center=True, shadow=False)
+        draw_text(surf, self.font_micro, "Enter / click the selected control. Esc or X closes.", (WIDTH // 2, HEIGHT - 30), (235, 240, 248), center=True, shadow=False)
         if self.message_timer > 0:
             draw_text(surf, self.font_small, self.message, (WIDTH // 2, panel.bottom + 12), (255, 240, 170), center=True, shadow=False)
 
@@ -7843,7 +7900,7 @@ class Game:
         surf.blit(self.get_overlay((WIDTH, HEIGHT), (10, 12, 20, 40)), (0, 0))
 
         title_y = 76
-        title_text = GAME_TITLE if self.menu_page == "MAIN" else "Choose a Mode"
+        title_text = GAME_TITLE if self.menu_page == "MAIN" else "Select Mode"
         draw_text(surf, self.font_huge, title_text, (WIDTH // 2, title_y), (255, 255, 255), center=True)
         if self.menu_page == "MAIN":
             draw_text(surf, self.font, "A Fresh Flappy Style Arcade", (WIDTH // 2, title_y + 52), (230, 240, 255), center=True, shadow=False)
@@ -8778,17 +8835,17 @@ class Game:
         self.menu_scroll += dt
         for cloud in self.clouds:
             cloud.update(dt * 0.45)
-        self.clouds[:] = [c for c in self.clouds if c.x > -180]
+        retain_clouds(self.clouds)
         while len(self.clouds) < 7:
             self.clouds.append(Cloud(WIDTH + random.uniform(0, 160), random.uniform(40, 260), random.uniform(0.6, 1.4), random.uniform(8, 22), random.randint(0, 2)))
         for p in self.particles:
             p.update(dt)
-        self.particles[:] = [p for p in self.particles if p.life > 0]
+        retain_positive_life(self.particles)
         if random.random() < 0.04:
             self.add_particle(random.uniform(0, WIDTH), random.uniform(0, HEIGHT), random.uniform(-8, -2), random.uniform(10, 30), 1.2, 2, (255, 255, 255))
         for t in self.texts:
             t.update(dt)
-        self.texts[:] = [t for t in self.texts if t.life > 0]
+        retain_positive_life(self.texts)
 
     # ── Letterbox / scaling helpers ───────────────────────────────────────────
 
