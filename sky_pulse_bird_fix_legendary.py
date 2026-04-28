@@ -398,6 +398,7 @@ _ROUND_RECT_CACHE = {}
 _TEXT_CACHE = {}
 _PARTICLE_CACHE = {}
 _CLOUD_CACHE = {}
+_PIPE_GAP_RING_CACHE = {}
 _WORK_SURFACE_CACHE = {}
 
 
@@ -407,6 +408,41 @@ def _trim_cache(cache: dict, limit: int):
             cache.pop(next(iter(cache)))
         except StopIteration:
             break
+
+def get_pipe_gap_ring_surface(size: tuple[int, int], phase: int, accent: Tuple[int, int, int], core: Tuple[int, int, int]) -> pygame.Surface:
+    """Return a reusable boss-gap ring overlay.
+
+    The artwork is cached at full intensity and tinted through surface alpha
+    at draw time, which is much cheaper than redrawing the ellipses/lines for
+    every pipe on every frame.
+    """
+    width = max(1, int(size[0]))
+    height = max(1, int(size[1]))
+    phase = max(1, int(phase))
+    key = (width, height, phase, accent, core)
+    surf = _PIPE_GAP_RING_CACHE.get(key)
+    if surf is None:
+        surf = pygame.Surface((width, height), pygame.SRCALPHA)
+        pygame.draw.ellipse(surf, (*accent, 255), (12, 12, width - 24, height - 24), 4)
+        pygame.draw.ellipse(surf, (*core, 255), (22, 22, width - 44, height - 44), 2)
+        for i in range(phase):
+            yy = 18 + i * max(10, height // max(2, phase + 1))
+            pygame.draw.line(surf, (*core, 225), (16, yy), (width - 16, yy), 1)
+        if phase >= 2:
+            for i in range(3):
+                ang = i * (math.tau / 3)
+                x1 = width * 0.5 + int(math.cos(ang) * 14)
+                y1 = height * 0.5 + int(math.sin(ang) * 8)
+                x2 = width * 0.5 + int(math.cos(ang) * (width * 0.42))
+                y2 = height * 0.5 + int(math.sin(ang) * (height * 0.34))
+                pygame.draw.line(surf, (*accent, 180), (x1, y1), (x2, y2), 1)
+        if phase >= 3:
+            for i in range(6):
+                x0 = 12 + i * (width - 24) // 6
+                pygame.draw.circle(surf, (*core, 200), (x0, 14 + (i % 2) * (height - 28)), 2)
+        _PIPE_GAP_RING_CACHE[key] = surf
+        _trim_cache(_PIPE_GAP_RING_CACHE, 384)
+    return surf
 
 def get_cached_sysfont(name: str, size: int, bold: bool = False, italic: bool = False):
     key = (name, size, bold, italic)
@@ -2702,7 +2738,7 @@ class Bird:
         skin = self.skin()
         angle = clamp(-self.vy * 0.06, -28, 34)
         r = self.radius
-        body = pygame.Surface((r * 4, r * 4), pygame.SRCALPHA)
+        body = get_clear_surface((r * 4, r * 4), ("bird_body", skin.name, r))
         cx = cy = r * 2
         flap = 0.5 + 0.5 * math.sin(self.wing_phase * 2.0)
         wing_raise = 1 if math.sin(self.wing_phase) > 0 else -1
@@ -2766,7 +2802,7 @@ class Bird:
         surf.blit(img, rect)
 
         if self.shield > 0:
-            shield_fx = pygame.Surface((r * 10, r * 10), pygame.SRCALPHA)
+            shield_fx = get_clear_surface((r * 10, r * 10), ("bird_shield_fx", skin.name, r))
             pulse = 0.5 + 0.5 * math.sin(self.shield * 16.0)
             ring_r = int(r * (2.00 + 0.10 * pulse))
             core_r = int(r * (1.48 + 0.05 * pulse))
@@ -2798,7 +2834,7 @@ class Bird:
             surf.blit(shield_fx, shield_fx.get_rect(center=(self.x, self.y)))
 
         if self.invuln > 0:
-            inv = pygame.Surface((r * 10, r * 10), pygame.SRCALPHA)
+            inv = get_clear_surface((r * 10, r * 10), ("bird_inv_fx", skin.name, r))
             pulse = 0.5 + 0.5 * math.sin(self.invuln * 14.0)
             cx2 = cy2 = r * 5
             outer_alpha = int(70 + 45 * pulse)
@@ -2886,7 +2922,7 @@ class Pipe:
             pygame.draw.rect(surf, top_color, lip2, border_radius=8)
 
             # Keep the arcade-like finish, but let boss stages reshape the details.
-            highlight = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            highlight = get_clear_surface((rect.width, rect.height), ("pipe_highlight", rect.width, rect.height))
             alpha = 36 + int(40 * pulse)
             pygame.draw.rect(highlight, (255, 255, 255, alpha), (6, 8, 10, max(8, rect.height - 16)), border_radius=5)
 
@@ -2896,7 +2932,7 @@ class Pipe:
                 accent = boss_spec["accent"]
                 core = boss_spec["core"]
                 body = boss_spec["body"]
-                boss_overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                boss_overlay = get_clear_surface((rect.width, rect.height), ("pipe_boss_overlay", boss_kind, rect.width, rect.height))
                 w = rect.width
                 h = rect.height
                 phase = boss_phase
@@ -2990,7 +3026,7 @@ class Pipe:
                         pygame.draw.arc(boss_overlay, (*accent, 120), (4 + offset, y - 6, w - 8, 16), 0.0, math.pi, 2)
                     pygame.draw.arc(boss_overlay, (*core, 180), (10, 8, w - 20, h - 16), 0.1 + tt * 0.3, 2.9 + tt * 0.3, 2)
 
-                phase_energy = pygame.Surface((w, h), pygame.SRCALPHA)
+                phase_energy = get_clear_surface((w, h), ("pipe_phase_energy", boss_kind, w, h))
                 phase_alpha = 42 + int(24 * max(0, phase - 1)) + int(28 * (1.0 - clamp(tt / 1.0, 0.0, 1.0)))
                 for i in range(phase):
                     yy = 18 + i * max(8, h // max(2, phase + 1))
@@ -3017,7 +3053,7 @@ class Pipe:
         draw_pipe_part(bot_rect, True)
 
         if self.variant > 0:
-            glow = pygame.Surface((self.width + 30, HEIGHT), pygame.SRCALPHA)
+            glow = get_clear_surface((self.width + 30, HEIGHT), ("pipe_glow", self.width, HEIGHT))
             alpha = 45 + int(45 * pulse)
             pygame.draw.rect(glow, (*theme["haze"], alpha), (10, int(self.gap_y - self.gap_size * 0.5) + 12, self.width + 10, self.gap_size - 24), border_radius=18)
             surf.blit(glow, (self.x - 15, 0))
@@ -3170,9 +3206,9 @@ class BossProjectile:
         intro_s = ease_out_cubic(intro)
         pulse = 0.82 + 0.18 * math.sin(self.spin * 0.8 + age * 8.0)
         size = self.radius * 8 + 24
-        glow = pygame.Surface((size, size), pygame.SRCALPHA)
+        glow = get_clear_surface((size, size), ("boss_projectile_glow", style, self.radius, idx))
         cx = cy = size // 2
-        trail = pygame.Surface((size, size), pygame.SRCALPHA)
+        trail = get_clear_surface((size, size), ("boss_projectile_trail", style, self.radius, idx))
         dirx = -1 if self.vx >= 0 else 1
         diry = -1 if self.vy >= 0 else 1
         trail_len = int((1.0 - intro_s) * (18 + self.radius * 1.9))
@@ -3300,7 +3336,7 @@ class BossProjectile:
             pygame.draw.circle(glow, (*core, 230), (cx, cy), max(3, self.radius // 2))
 
         if intro_s < 1.0:
-            entry = pygame.Surface((size, size), pygame.SRCALPHA)
+            entry = get_clear_surface((size, size), ("boss_projectile_entry", style, self.radius, idx))
             entry_r = int(self.radius * (2.2 - 0.95 * intro_s))
             pygame.draw.circle(entry, (*accent, int(160 * (1.0 - intro_s))), (cx, cy), entry_r, 2)
             pygame.draw.circle(entry, (*core, int(160 * (1.0 - intro_s))), (cx, cy), max(2, int(self.radius * intro_s)))
@@ -4292,6 +4328,9 @@ class Game:
         self.notifications = []
 
         self.reset_world()
+        # Pre-allocated surface for boss entry fade (reused every frame, zero allocation).
+        self._boss_entry_fade_surf = pygame.Surface((WIDTH, HEIGHT)).convert()
+        self._boss_entry_fade_surf.fill((0, 0, 0))
         self.menu_items = ["PLAY", "SKINS", "Profile", "OPTIONS", "QUIT"]
         self.menu_page = "MAIN"
         self.play_index = 0
@@ -4796,6 +4835,8 @@ class Game:
         draw_text(surf, self.font_huge, "Profile", (WIDTH // 2, 44), WHITE, center=True)
         draw_text(surf, self.font, "Stats - Quests - Achievements", (WIDTH // 2, 84), (220, 230, 240), center=True, shadow=False)
 
+        self._draw_screen_close_btn(surf, self.profile_close_rect())
+
         tabs = self.profile_tab_rects()
         for key, label, accent in (
             ("stats", "Stats", (255, 220, 140)),
@@ -5001,6 +5042,13 @@ class Game:
                 self.profile_tab = "achievements"
                 self.save_settings()
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            close_rect = self.profile_close_rect()
+            if close_rect.collidepoint(event.pos):
+                self.trigger_button_flash(close_rect)
+                self.sounds.play("click")
+                self.state = "MENU"
+                self.save_settings()
+                return
             order = ["stats", "quests", "achievements"]
             prev_r = self.profile_nav_rect(-1)
             next_r = self.profile_nav_rect(1)
@@ -5060,6 +5108,8 @@ class Game:
         self.boss_mode = False
         self.boss_intro = 0.0
         self.boss_intro_done = True
+        self.boss_entry_fade = 0.0
+        self.boss_entry_fade_total = 0.0
         self.boss_hit_flash = 0.0
         self.boss_timer = 0.0
         self.boss_clear_pending = False
@@ -5096,6 +5146,19 @@ class Game:
         self.env_lightning_timer = 0.0     # seconds lightning stays visible
         self.env_ambient_particles: List[Particle] = []   # env-specific particles
         # ─────────────────────────────────────────────────────────────────────
+        # ── Boss phase visual effects ─────────────────────────────────────────
+        self.boss_ripples: List[dict] = []
+        self.boss_afterimages: List[dict] = []
+        self._boss_prev_y: float = HEIGHT * 0.44
+        self._boss_y_dir: int = 0
+        self._boss_afterimage_timer: float = 0.0
+        # ── Bird phase visual effects (mirrors boss, gated on boss.phase) ────
+        self.bird_ripples: List[dict] = []
+        self.bird_afterimages: List[dict] = []
+        self._bird_prev_y: float = HEIGHT * 0.48
+        self._bird_y_dir: int = 0
+        self._bird_afterimage_timer: float = 0.0
+        # ─────────────────────────────────────────────────────────────────────
         for i in range(7):
             self.clouds.append(Cloud(random.uniform(0, WIDTH), random.uniform(40, 260), random.uniform(0.6, 1.4), random.uniform(8, 22), i % 3))
 
@@ -5122,6 +5185,11 @@ class Game:
             self.boss = Boss(hp=hp, max_hp=hp, boss_id=self.boss_index)
             self.boss_intro = 1.2
             self.boss_intro_done = False
+            # Fade from black → clear, finishing just before the first pipe arrives.
+            _diff = DIFFICULTIES[difficulty_index]
+            _boss_scale = 0.84 if _diff.name == "INSANE" else 0.90
+            self.boss_entry_fade_total = max(0.0, _diff.pipe_interval * _boss_scale - 0.15)
+            self.boss_entry_fade = self.boss_entry_fade_total
             self.message = ""
             self.message_timer = 0.0
             self.run_stats["boss_name"] = BOSS_SPECS[self.boss_index]["name"]
@@ -5308,6 +5376,32 @@ class Game:
     def option_close_rect(self) -> pygame.Rect:
         panel = self.option_panel_rect()
         return pygame.Rect(panel.right - 50, panel.y + 16, 34, 34)
+
+    def skin_close_rect(self) -> pygame.Rect:
+        return pygame.Rect(WIDTH - 54, 14, 34, 34)
+
+    def difficulty_close_rect(self) -> pygame.Rect:
+        return pygame.Rect(WIDTH - 54, 14, 34, 34)
+
+    def boss_select_close_rect(self) -> pygame.Rect:
+        return pygame.Rect(WIDTH - 54, 14, 34, 34)
+
+    def profile_close_rect(self) -> pygame.Rect:
+        return pygame.Rect(WIDTH - 54, 14, 34, 34)
+
+    def _draw_screen_close_btn(self, surf: pygame.Surface, close_rect: pygame.Rect):
+        """Draw a red X close button (used on full-screen menus)."""
+        hovered = self.is_button_hovered(close_rect)
+        close_flash = self.is_button_flashed(close_rect)
+        fill = (102, 30, 34) if (hovered or close_flash) else (68, 22, 26)
+        edge = (255, 96, 96) if (hovered or close_flash) else (182, 64, 72)
+        draw_round_rect(surf, fill, close_rect, radius=11)
+        draw_round_outline(surf, edge, close_rect, radius=11, width=2)
+        self.draw_button_shine(surf, close_rect, 11)
+        self.draw_pulse_overlay(surf, close_rect, 11, hovered=hovered, flash=close_flash, phase_shift=0.7)
+        x_font = get_cached_sysfont("arial", 18, bold=True)
+        x_img = render_text_cached(x_font, "X", WHITE)
+        surf.blit(x_img, x_img.get_rect(center=close_rect.center))
 
     def option_rect(self, index: int) -> pygame.Rect:
         panel = self.option_panel_rect()
@@ -5656,7 +5750,7 @@ class Game:
         self.draw_pulse_overlay(surf, rect, 26, hovered=hovered, active=active, flash=flash, phase_shift=0.18)
 
         inner = rect.inflate(-18, -54)
-        preview = pygame.Surface(inner.size, pygame.SRCALPHA)
+        preview = get_clear_surface(inner.size, ("play_card_preview", kind, inner.size))
         t = self.menu_scroll
         if kind == "ARCADE":
             pygame.draw.rect(preview, (34, 76, 140), preview.get_rect(), border_radius=20)
@@ -5987,7 +6081,8 @@ class Game:
 
     def spawn_shield_break_fx(self, x: float, y: float):
         shield_color = (100, 230, 255)
-        for angle in np.linspace(0, math.tau, 16, endpoint=False):
+        for i in range(16):
+            angle = i * (math.tau / 16)
             vx = math.cos(angle) * random.uniform(110, 220)
             vy = math.sin(angle) * random.uniform(110, 220)
             self.add_particle(x, y, vx, vy, random.uniform(0.22, 0.5), random.uniform(2, 4), shield_color, gravity=250.0)
@@ -6746,6 +6841,8 @@ class Game:
     def update_play(self, dt: float):
         difficulty = self.current_difficulty()
         self.time_alive += dt
+        if self.boss_entry_fade > 0:
+            self.boss_entry_fade = max(0.0, self.boss_entry_fade - dt)
         self.wind_phase += dt
         self.profile_totals["play_time"] = float(self.profile_totals.get("play_time", 0.0)) + float(dt)
         self.update_theme_by_score()
@@ -6756,13 +6853,13 @@ class Game:
             self.boss_clear_timer = self.boss.death_timer
             for p in self.particles:
                 p.update(dt)
-            self.particles = [p for p in self.particles if p.life > 0]
+            self.particles[:] = [p for p in self.particles if p.life > 0]
             for t in self.texts:
                 t.update(dt)
-            self.texts = [t for t in self.texts if t.life > 0]
+            self.texts[:] = [t for t in self.texts if t.life > 0]
             for cloud in self.clouds:
                 cloud.update(dt * 0.35)
-            self.clouds = [c for c in self.clouds if c.x > -180]
+            self.clouds[:] = [c for c in self.clouds if c.x > -180]
             while len(self.clouds) < 7:
                 self.clouds.append(Cloud(WIDTH + random.uniform(0, 160), random.uniform(40, 260), random.uniform(0.6, 1.4), random.uniform(8, 22), random.randint(0, 2)))
             self.ambient_timer += dt
@@ -6794,30 +6891,30 @@ class Game:
 
         for cloud in self.clouds:
             cloud.update(dt)
-        self.clouds = [c for c in self.clouds if c.x > -180]
+        self.clouds[:] = [c for c in self.clouds if c.x > -180]
         while len(self.clouds) < 7:
             self.clouds.append(Cloud(WIDTH + random.uniform(0, 160), random.uniform(40, 260), random.uniform(0.6, 1.4), random.uniform(8, 22), random.randint(0, 2)))
 
         pipe_dt = dt
         for pipe in self.pipes:
             pipe.update(pipe_dt, difficulty, self.score)
-        self.pipes = [p for p in self.pipes if p.x + p.width > -80]
+        self.pipes[:] = [p for p in self.pipes if p.x + p.width > -80]
 
         for orb in self.orbs:
             orb.update(pipe_dt)
-        self.orbs = [o for o in self.orbs if o.x > -80 and o.active]
+        self.orbs[:] = [o for o in self.orbs if o.x > -80 and o.active]
 
         for proj in self.projectiles:
             proj.update(dt)
-        self.projectiles = [p for p in self.projectiles if -80 < p.x < WIDTH + 80 and -80 < p.y < HEIGHT + 80]
+        self.projectiles[:] = [p for p in self.projectiles if -80 < p.x < WIDTH + 80 and -80 < p.y < HEIGHT + 80]
 
         for p in self.particles:
             p.update(dt)
-        self.particles = [p for p in self.particles if p.life > 0]
+        self.particles[:] = [p for p in self.particles if p.life > 0]
 
         for t in self.texts:
             t.update(dt)
-        self.texts = [t for t in self.texts if t.life > 0]
+        self.texts[:] = [t for t in self.texts if t.life > 0]
 
         if self.boss_mode and self.boss:
             self.boss.update(pipe_dt, difficulty, self.pipes, self.projectiles, self.orbs, self.score)
@@ -6963,7 +7060,7 @@ class Game:
             radius = sun.get("radius", 54)
             pulse = 0.5 - 0.5 * math.cos(t * 0.72)
             micro = 0.5 - 0.5 * math.cos(t * 0.18)
-            sun_fx = pygame.Surface((240, 240), pygame.SRCALPHA)
+            sun_fx = get_clear_surface((240, 240), ("dawn_sun_fx",))
             center = (120, 120)
             glow_r = int(82 + pulse * 8)
             ring_r = int(98 + pulse * 5)
@@ -7120,7 +7217,7 @@ class Game:
             panel_w = min(720, int(WIDTH * 0.70))
             panel_h = 124
             panel = pygame.Rect(WIDTH // 2 - panel_w // 2, int(center_y - panel_h / 2), panel_w, panel_h)
-            overlay = pygame.Surface(panel.size, pygame.SRCALPHA)
+            overlay = get_clear_surface(panel.size, ("boss_intro_overlay", panel_w, panel_h))
             draw_round_rect(overlay, (10, 14, 22, 208), overlay.get_rect(), radius=26)
             draw_round_outline(overlay, spec["accent"], overlay.get_rect(), radius=26, width=2)
             t = self.boss_intro
@@ -7200,16 +7297,11 @@ class Game:
             if self.boss_mode and self.boss:
                 gap = pipe.gap_rect()
                 if self.boss.hp > 0 and gap.width > 0:
-                    ring = pygame.Surface((gap.width + 54, gap.height + 54), pygame.SRCALPHA)
-                    a = int(100 + 90 * pulse)
                     phase = self.boss.phase
                     spec = self.boss.spec()
-                    pygame.draw.ellipse(ring, (255, 220, 160, a), (12, 12, gap.width + 30, gap.height + 30), 4)
-                    pygame.draw.ellipse(ring, (255, 120, 120, a), (22, 22, gap.width + 10, gap.height + 10), 2)
-                    pygame.draw.ellipse(ring, (*spec["accent"], 80 + 18 * phase), (2, 2, gap.width + 50, gap.height + 50), 1)
-                    for i in range(phase):
-                        yy = 18 + i * max(10, gap.height // max(2, phase + 1))
-                        pygame.draw.line(ring, (*spec["core"], 70 + 18 * i), (16, yy), (gap.width + 38, yy), 1)
+                    ring = get_pipe_gap_ring_surface((gap.width + 54, gap.height + 54), phase, spec["accent"], spec["core"]).copy()
+                    a = int(100 + 90 * pulse)
+                    ring.set_alpha(a)
                     surf.blit(ring, ring.get_rect(center=gap.center))
 
         for orb in self.orbs:
@@ -7222,6 +7314,7 @@ class Game:
             p.draw(surf)
         for t in self.texts:
             t.draw(surf, self.font)
+
 
     def draw_play(self):
         surf = self.screen
@@ -7240,6 +7333,11 @@ class Game:
             self.draw_boss_env_fg_layer(surf)
         # ─────────────────────────────────────────────────────────────────────
         self.draw_hitboxes_overlay(surf)
+        # Boss entry fade: darkens game world only; boss description panel (drawn in draw_ui) is unaffected.
+        if self.boss_mode and self.boss_entry_fade > 0:
+            alpha = int(255 * self.boss_entry_fade / max(0.001, self.boss_entry_fade_total))
+            self._boss_entry_fade_surf.set_alpha(alpha)
+            surf.blit(self._boss_entry_fade_surf, (0, 0))
         self.draw_ui(surf)
 
         if self.state == "CLEAR":
@@ -7341,6 +7439,7 @@ class Game:
         draw_text(surf, self.font_small, "Aesthetic Only. No Gameplay Advantage.", (WIDTH // 2, HEIGHT - 34), WHITE, center=True, shadow=False)
         if self.message_timer > 0:
             draw_text(surf, self.font, self.message, (WIDTH // 2, HEIGHT - 64), (255, 240, 170), center=True, shadow=False)
+        self._draw_screen_close_btn(surf, self.skin_close_rect())
         self.draw_notifications(surf)
 
     def draw_difficulty_screen(self):
@@ -7381,6 +7480,7 @@ class Game:
             r = self.difficulty_nav_rect(d)
             self.draw_nav_arrow(surf, r, d, flash=self.is_button_flashed(r))
 
+        self._draw_screen_close_btn(surf, self.difficulty_close_rect())
         self.draw_notifications(surf)
 
     def draw_boss_select_screen(self):
@@ -7418,6 +7518,7 @@ class Game:
             r = self.boss_nav_rect(d)
             self.draw_nav_arrow(surf, r, d, flash=self.is_button_flashed(r))
 
+        self._draw_screen_close_btn(surf, self.boss_select_close_rect())
         self.draw_notifications(surf)
 
     def draw_options_screen(self):
@@ -7435,17 +7536,7 @@ class Game:
         draw_text(surf, self.font_big, "Options", (panel.centerx, panel.y + 34), WHITE, center=True, shadow=False)
 
         close_rect = self.option_close_rect()
-        hovered = self.is_button_hovered(close_rect)
-        close_flash = self.is_button_flashed(close_rect)
-        fill = (102, 30, 34) if (hovered or close_flash) else (68, 22, 26)
-        edge = (255, 96, 96) if (hovered or close_flash) else (182, 64, 72)
-        draw_round_rect(surf, fill, close_rect, radius=11)
-        draw_round_outline(surf, edge, close_rect, radius=11, width=2)
-        self.draw_button_shine(surf, close_rect, 11)
-        self.draw_pulse_overlay(surf, close_rect, 11, hovered=hovered, flash=close_flash, phase_shift=0.7)
-        x_font = get_cached_sysfont("arial", 18, bold=True)
-        x_img = render_text_cached(x_font, "X", WHITE)
-        surf.blit(x_img, x_img.get_rect(center=close_rect.center))
+        self._draw_screen_close_btn(surf, close_rect)
 
         for i, item in enumerate(self.option_items()):
             rect = self.option_rect(i)
@@ -7729,6 +7820,13 @@ class Game:
             elif event.key == pygame.K_RETURN:
                 self.activate_skin_card()
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            close_rect = self.skin_close_rect()
+            if close_rect.collidepoint(event.pos):
+                self.trigger_button_flash(close_rect)
+                self.sounds.play("click")
+                self.state = "MENU"
+                self.save_settings()
+                return
             card = self.skin_card_rect()
             prev_rect = self.skin_nav_rect(-1)
             next_rect = self.skin_nav_rect(1)
@@ -7771,6 +7869,13 @@ class Game:
             elif event.key == pygame.K_ESCAPE:
                 self.state = "MENU"
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            close_rect = self.difficulty_close_rect()
+            if close_rect.collidepoint(event.pos):
+                self.trigger_button_flash(close_rect)
+                self.sounds.play("click")
+                self.state = "MENU"
+                self.save_settings()
+                return
             prev_r = self.difficulty_nav_rect(-1)
             next_r = self.difficulty_nav_rect(1)
             if prev_r.collidepoint(event.pos):
@@ -7827,6 +7932,12 @@ class Game:
             elif event.key == pygame.K_ESCAPE:
                 self.state = "DIFFICULTY"
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            close_rect = self.boss_select_close_rect()
+            if close_rect.collidepoint(event.pos):
+                self.trigger_button_flash(close_rect)
+                self.sounds.play("click")
+                self.state = "DIFFICULTY"
+                return
             visible = VISIBLE_BOSS_INDICES
             current_pos = visible.index(self.boss_index) if self.boss_index in visible else 0
             prev_r = self.boss_nav_rect(-1)
@@ -8597,17 +8708,17 @@ class Game:
         self.menu_scroll += dt
         for cloud in self.clouds:
             cloud.update(dt * 0.45)
-        self.clouds = [c for c in self.clouds if c.x > -180]
+        self.clouds[:] = [c for c in self.clouds if c.x > -180]
         while len(self.clouds) < 7:
             self.clouds.append(Cloud(WIDTH + random.uniform(0, 160), random.uniform(40, 260), random.uniform(0.6, 1.4), random.uniform(8, 22), random.randint(0, 2)))
         for p in self.particles:
             p.update(dt)
-        self.particles = [p for p in self.particles if p.life > 0]
+        self.particles[:] = [p for p in self.particles if p.life > 0]
         if random.random() < 0.04:
             self.add_particle(random.uniform(0, WIDTH), random.uniform(0, HEIGHT), random.uniform(-8, -2), random.uniform(10, 30), 1.2, 2, (255, 255, 255))
         for t in self.texts:
             t.update(dt)
-        self.texts = [t for t in self.texts if t.life > 0]
+        self.texts[:] = [t for t in self.texts if t.life > 0]
 
     # ── Letterbox / scaling helpers ───────────────────────────────────────────
 
