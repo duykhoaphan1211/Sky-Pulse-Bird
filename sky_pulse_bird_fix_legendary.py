@@ -400,6 +400,15 @@ _PARTICLE_CACHE = {}
 _CLOUD_CACHE = {}
 _PIPE_GAP_RING_CACHE = {}
 _WORK_SURFACE_CACHE = {}
+_BIRD_BODY_CACHE = {}
+_ORB_BODY_CACHE = {}
+ORB_PHASE_BUCKETS = 12
+ORB_ARMS_4 = tuple((math.tau * i) / 4.0 for i in range(4))
+ORB_ARMS_5 = tuple((math.tau * i) / 5.0 for i in range(5))
+ORB_ARMS_6 = tuple((math.tau * i) / 6.0 for i in range(6))
+ORB_ARMS_8 = tuple((math.tau * i) / 8.0 for i in range(8))
+ORB_ARMS_16 = tuple((math.tau * i) / 16.0 for i in range(16))
+BIRD_SHIELD_ARMS = tuple((math.tau * i) / 8.0 for i in range(8))
 
 
 def _trim_cache(cache: dict, limit: int):
@@ -409,17 +418,24 @@ def _trim_cache(cache: dict, limit: int):
         except StopIteration:
             break
 
-def get_pipe_gap_ring_surface(size: tuple[int, int], phase: int, accent: Tuple[int, int, int], core: Tuple[int, int, int]) -> pygame.Surface:
+def get_pipe_gap_ring_surface(
+    size: tuple[int, int],
+    phase: int,
+    accent: Tuple[int, int, int],
+    core: Tuple[int, int, int],
+    alpha: Optional[int] = None,
+) -> pygame.Surface:
     """Return a reusable boss-gap ring overlay.
 
-    The artwork is cached at full intensity and tinted through surface alpha
-    at draw time, which is much cheaper than redrawing the ellipses/lines for
-    every pipe on every frame.
+    The artwork is cached once per size/phase/tint pair. When an alpha is
+    provided we cache that opacity bucket directly as well, which avoids
+    allocating a fresh copy every frame in boss fights.
     """
     width = max(1, int(size[0]))
     height = max(1, int(size[1]))
     phase = max(1, int(phase))
-    key = (width, height, phase, accent, core)
+    alpha_bucket = None if alpha is None else max(0, min(255, int(alpha)) // 8 * 8)
+    key = (width, height, phase, accent, core, alpha_bucket)
     surf = _PIPE_GAP_RING_CACHE.get(key)
     if surf is None:
         surf = pygame.Surface((width, height), pygame.SRCALPHA)
@@ -440,6 +456,8 @@ def get_pipe_gap_ring_surface(size: tuple[int, int], phase: int, accent: Tuple[i
             for i in range(6):
                 x0 = 12 + i * (width - 24) // 6
                 pygame.draw.circle(surf, (*core, 200), (x0, 14 + (i % 2) * (height - 28)), 2)
+        if alpha_bucket is not None:
+            surf.set_alpha(alpha_bucket)
         _PIPE_GAP_RING_CACHE[key] = surf
         _trim_cache(_PIPE_GAP_RING_CACHE, 384)
     return surf
@@ -490,6 +508,151 @@ def get_clear_surface(size: tuple[int, int], key):
         _trim_cache(_WORK_SURFACE_CACHE, 96)
     else:
         surf.fill((0, 0, 0, 0))
+    return surf
+
+
+def get_bird_body_surface(skin: Skin, radius: int) -> pygame.Surface:
+    """Return the static (non-wing) bird sprite for a skin/radius pair."""
+    radius = max(1, int(radius))
+    key = (skin.name, radius)
+    surf = _BIRD_BODY_CACHE.get(key)
+    if surf is None:
+        size = radius * 4
+        surf = pygame.Surface((size, size), pygame.SRCALPHA).convert_alpha()
+        cx = cy = radius * 2
+        r = radius
+        body_col = skin.bird_main
+        alt_col = skin.bird_alt
+        beak = skin.bird_beak
+        style = skin.fx
+
+        pygame.draw.ellipse(surf, body_col, (cx - r, cy - int(r * 0.84), int(r * 1.95), int(r * 1.52)))
+        pygame.draw.ellipse(surf, alt_col, (cx - int(r * 0.10), cy - int(r * 0.54), int(r * 1.02), int(r * 0.88)))
+        pygame.draw.circle(surf, (255, 255, 255), (cx + 3, cy - 4), 5)
+        pygame.draw.circle(surf, (20, 20, 25), (cx + 4, cy - 4), 2)
+        pygame.draw.polygon(surf, beak, [(cx + 7, cy - 1), (cx + 19, cy + 3), (cx + 7, cy + 7)])
+
+        if style == "NEON":
+            pygame.draw.circle(surf, (*skin.accent, 65), (cx, cy), int(r * 1.55), 2)
+            pygame.draw.line(surf, (*skin.accent, 120), (cx - 14, cy - 4), (cx - 28, cy - 10), 2)
+        elif style == "EMBER":
+            for i in range(4):
+                fx = cx - 18 - i * 5
+                fy = cy + 8 + i
+                pygame.draw.polygon(surf, (255, 160 + i * 15, 60, 170), [(fx, fy), (fx - 8, fy + 2), (fx - 2, fy - 8)])
+        elif style == "AQUA":
+            for i in range(3):
+                pygame.draw.circle(surf, (220, 255, 255, 110), (cx - 20 - i * 5, cy + 8 + i * 2), 2)
+        elif style == "SHADOW" or style == "VOID":
+            pygame.draw.circle(surf, (40, 44, 60, 110), (cx + 1, cy + 2), int(r * 1.35), 2)
+            pygame.draw.line(surf, (220, 220, 255, 100), (cx - 8, cy + 14), (cx - 24, cy + 18), 1)
+        elif style == "ROYAL":
+            pygame.draw.polygon(surf, (255, 230, 120, 200), [(cx - 1, cy - 20), (cx + 5, cy - 28), (cx + 12, cy - 20), (cx + 18, cy - 27), (cx + 24, cy - 16), (cx - 1, cy - 16)])
+        elif style == "CHERRY":
+            pygame.draw.circle(surf, (255, 170, 195, 150), (cx - 18, cy + 10), 3)
+            pygame.draw.circle(surf, (255, 170, 195, 150), (cx - 24, cy + 2), 2)
+        elif style == "CRYSTAL":
+            pygame.draw.line(surf, (255, 255, 255, 160), (cx - 14, cy - 14), (cx + 6, cy + 8), 2)
+            pygame.draw.line(surf, (180, 250, 255, 160), (cx - 5, cy - 20), (cx + 16, cy - 2), 1)
+        elif style == "SOLAR":
+            for a in range(5):
+                pygame.draw.line(surf, (255, 220, 100, 120), (cx - 4, cy - 16), (cx - 14 - a * 2, cy - 28 - a), 1)
+        elif style == "VIOLET":
+            pygame.draw.circle(surf, (255, 255, 255, 110), (cx - 18, cy - 10), 2)
+            pygame.draw.circle(surf, (255, 180, 240, 110), (cx - 26, cy + 2), 1)
+        elif style == "MINT":
+            pygame.draw.arc(surf, (120, 255, 180, 130), (cx - 34, cy - 8, 24, 18), 0.2, 2.8, 2)
+        elif style == "GHOST":
+            pygame.draw.ellipse(surf, (240, 250, 255, 80), (cx - r + 2, cy - int(r * 0.62), int(r * 1.82), int(r * 1.32)))
+        elif style == "PIXEL":
+            pygame.draw.rect(surf, (255, 255, 255, 140), (cx - 21, cy - 18, 4, 4))
+            pygame.draw.rect(surf, (90, 255, 190, 140), (cx - 26, cy - 4, 4, 4))
+
+        _BIRD_BODY_CACHE[key] = surf
+        _trim_cache(_BIRD_BODY_CACHE, 128)
+    return surf
+
+
+def get_orb_body_surface(kind: str, color: Tuple[int, int, int], phase_bucket: int, size: int = 88) -> pygame.Surface:
+    """Return a cached orb sprite body before the final rotation."""
+    size = max(24, int(size))
+    phase_bucket = int(phase_bucket) % ORB_PHASE_BUCKETS
+    key = (kind, tuple(color), phase_bucket, size)
+    surf = _ORB_BODY_CACHE.get(key)
+    if surf is not None:
+        return surf
+
+    surf = pygame.Surface((size, size), pygame.SRCALPHA).convert_alpha()
+    cx = cy = size // 2
+    phase = (phase_bucket / float(ORB_PHASE_BUCKETS)) * math.tau
+    pulse = 0.5 + 0.5 * math.sin(phase * 2.0)
+    glow_r = 22 + int(3 * pulse)
+    pygame.draw.circle(surf, (*color, 34 + int(20 * pulse)), (cx, cy), glow_r + 6)
+
+    if kind == "shield":
+        pygame.draw.circle(surf, (*color, 70), (cx, cy), 27 + int(2 * pulse), 2)
+        pts = [(cx, cy - 18), (cx + 16, cy - 7), (cx + 12, cy + 14), (cx, cy + 24), (cx - 12, cy + 14), (cx - 16, cy - 7)]
+        pygame.draw.polygon(surf, (*color, 225), pts)
+        pygame.draw.polygon(surf, (255, 255, 255, 120), [(cx, cy - 11), (cx + 8, cy - 3), (cx + 5, cy + 8), (cx, cy + 14), (cx - 5, cy + 8), (cx - 8, cy - 3)])
+        pygame.draw.line(surf, (255, 255, 255, 90), (cx - 10, cy), (cx + 10, cy), 2)
+        pygame.draw.line(surf, (255, 255, 255, 90), (cx, cy - 10), (cx, cy + 10), 2)
+        for ang in ORB_ARMS_4:
+            px = cx + int(math.cos(ang + phase) * 21)
+            py = cy + int(math.sin(ang + phase) * 21)
+            pygame.draw.circle(surf, (180, 245, 255, 150), (px, py), 2)
+    elif kind == "coin":
+        pygame.draw.circle(surf, (255, 230, 120, 220), (cx, cy), 16)
+        pygame.draw.circle(surf, (255, 250, 180, 230), (cx - 3, cy - 4), 6)
+        pygame.draw.arc(surf, (255, 200, 70, 220), (cx - 17, cy - 17, 34, 34), 0.2 + phase, 5.0 + phase, 4)
+        for ang in ORB_ARMS_6:
+            px = cx + int(math.cos(ang + phase) * 19)
+            py = cy + int(math.sin(ang + phase) * 19)
+            pygame.draw.line(surf, (255, 235, 160, 160), (cx, cy), (px, py), 1)
+    elif kind == "magnet":
+        pygame.draw.arc(surf, (255, 255, 255, 230), (cx - 14, cy - 14, 28, 28), math.pi * 0.12 + phase * 0.5, math.pi * 1.22 + phase * 0.5, 6)
+        pygame.draw.line(surf, (255, 255, 255, 230), (cx - 14, cy - 6), (cx - 14, cy + 10), 6)
+        pygame.draw.line(surf, (255, 255, 255, 230), (cx + 14, cy - 6), (cx + 14, cy + 10), 6)
+        for ang in ORB_ARMS_5:
+            px = cx + int(math.cos(ang + phase * 1.2) * 18)
+            py = cy + int(math.sin(ang + phase * 1.2) * 18)
+            pygame.draw.circle(surf, (255, 140, 140, 110), (px, py), 2)
+    elif kind == "boost":
+        bolt = [(cx - 1, cy - 20), (cx + 12, cy - 5), (cx + 3, cy - 4), (cx + 8, cy + 18), (cx - 14, cy - 1), (cx - 5, cy - 1)]
+        pygame.draw.polygon(surf, (255, 255, 255, 235), bolt)
+        pygame.draw.circle(surf, (160, 255, 180, 180), (cx, cy), 22, 2)
+        for ang in ORB_ARMS_8:
+            px = cx + int(math.cos(ang + phase) * 19)
+            py = cy + int(math.sin(ang + phase) * 19)
+            pygame.draw.line(surf, (180, 255, 200, 100), (cx, cy), (px, py), 1)
+    elif kind == "revive":
+        ring = 24 + int(2 * pulse)
+        pygame.draw.circle(surf, (255, 220, 150, 170), (cx, cy), ring, 3)
+        pygame.draw.circle(surf, (255, 248, 220, 220), (cx, cy), 11)
+        pygame.draw.polygon(surf, (255, 210, 120, 240), [(cx, cy - 18), (cx + 11, cy - 6), (cx + 5, cy - 6), (cx + 8, cy + 8), (cx, cy + 16), (cx - 8, cy + 8), (cx - 5, cy - 6), (cx - 11, cy - 6)])
+        pygame.draw.rect(surf, (120, 70, 30, 220), (cx - 3, cy - 4, 6, 16), border_radius=2)
+        pygame.draw.line(surf, (255, 255, 255, 150), (cx - 10, cy - 1), (cx + 10, cy - 1), 2)
+        for ang in ORB_ARMS_6:
+            px = cx + int(math.cos(ang + phase * 1.5) * (ring - 4))
+            py = cy + int(math.sin(ang + phase * 1.5) * (ring - 4))
+            pygame.draw.circle(surf, (255, 240, 180, 180), (px, py), 2)
+    elif kind == "multiplier":
+        pygame.draw.circle(surf, (255, 210, 255, 60), (cx, cy), 23)
+        draw_text(surf, get_cached_sysfont("arial", 18, bold=True), "X2", (cx, cy - 10), WHITE, center=True, shadow=False)
+        pygame.draw.arc(surf, (255, 210, 255, 200), (cx - 21, cy - 21, 42, 42), phase * 1.2, phase * 1.2 + 4.0, 3)
+    elif kind == "core":
+        pygame.draw.polygon(surf, (255, 240, 210, 245), [(cx, cy - 20), (cx + 15, cy - 8), (cx + 10, cy + 10), (cx, cy + 20), (cx - 10, cy + 10), (cx - 15, cy - 8)])
+        pygame.draw.circle(surf, (255, 140, 90, 220), (cx, cy), 4)
+        pygame.draw.circle(surf, (255, 210, 160, 110), (cx, cy), 24, 2)
+    else:
+        pygame.draw.circle(surf, (*color, 180), (cx, cy), 18)
+
+    for ang in ORB_ARMS_4:
+        px = cx + int(math.cos(ang + phase * 1.5) * 28)
+        py = cy + int(math.sin(ang + phase * 1.5) * 28)
+        pygame.draw.circle(surf, (*color, 120), (px, py), 2)
+
+    _ORB_BODY_CACHE[key] = surf
+    _trim_cache(_ORB_BODY_CACHE, 256)
     return surf
 
 class SoundBank:
@@ -2738,17 +2901,10 @@ class Bird:
         skin = self.skin()
         angle = clamp(-self.vy * 0.06, -28, 34)
         r = self.radius
-        body = get_clear_surface((r * 4, r * 4), ("bird_body", skin.name, r))
         cx = cy = r * 2
         flap = 0.5 + 0.5 * math.sin(self.wing_phase * 2.0)
         wing_raise = 1 if math.sin(self.wing_phase) > 0 else -1
-        body_col = skin.bird_main
-        alt_col = skin.bird_alt
-        beak = skin.bird_beak
-        style = skin.fx
-
-        pygame.draw.ellipse(body, body_col, (cx - r, cy - int(r * 0.84), int(r * 1.95), int(r * 1.52)))
-        pygame.draw.ellipse(body, alt_col, (cx - int(r * 0.10), cy - int(r * 0.54), int(r * 1.02), int(r * 0.88)))
+        body = get_bird_body_surface(skin, r).copy()
 
         wing_pts = [
             (cx - 2, cy + 1),
@@ -2756,46 +2912,7 @@ class Bird:
             (cx + int(4 - 2 * flap), cy - int(2 + 6 * flap)),
             (cx + int(7 + 2 * flap), cy + 3),
         ]
-        pygame.draw.polygon(body, alt_col, wing_pts)
-        pygame.draw.circle(body, (255, 255, 255), (cx + 3, cy - 4), 5)
-        pygame.draw.circle(body, (20, 20, 25), (cx + 4, cy - 4), 2)
-        pygame.draw.polygon(body, beak, [(cx + 7, cy - 1), (cx + 19, cy + 3), (cx + 7, cy + 7)])
-
-        if style == "NEON":
-            pygame.draw.circle(body, (*skin.accent, 65), (cx, cy), int(r * 1.55), 2)
-            pygame.draw.line(body, (*skin.accent, 120), (cx - 14, cy - 4), (cx - 28, cy - 10), 2)
-        elif style == "EMBER":
-            for i in range(4):
-                fx = cx - 18 - i * 5
-                fy = cy + 8 + i
-                pygame.draw.polygon(body, (255, 160 + i * 15, 60, 170), [(fx, fy), (fx - 8, fy + 2), (fx - 2, fy - 8)])
-        elif style == "AQUA":
-            for i in range(3):
-                pygame.draw.circle(body, (220, 255, 255, 110), (cx - 20 - i * 5, cy + 8 + i * 2), 2)
-        elif style == "SHADOW" or style == "VOID":
-            pygame.draw.circle(body, (40, 44, 60, 110), (cx + 1, cy + 2), int(r * 1.35), 2)
-            pygame.draw.line(body, (220, 220, 255, 100), (cx - 8, cy + 14), (cx - 24, cy + 18), 1)
-        elif style == "ROYAL":
-            pygame.draw.polygon(body, (255, 230, 120, 200), [(cx - 1, cy - 20), (cx + 5, cy - 28), (cx + 12, cy - 20), (cx + 18, cy - 27), (cx + 24, cy - 16), (cx - 1, cy - 16)])
-        elif style == "CHERRY":
-            pygame.draw.circle(body, (255, 170, 195, 150), (cx - 18, cy + 10), 3)
-            pygame.draw.circle(body, (255, 170, 195, 150), (cx - 24, cy + 2), 2)
-        elif style == "CRYSTAL":
-            pygame.draw.line(body, (255, 255, 255, 160), (cx - 14, cy - 14), (cx + 6, cy + 8), 2)
-            pygame.draw.line(body, (180, 250, 255, 160), (cx - 5, cy - 20), (cx + 16, cy - 2), 1)
-        elif style == "SOLAR":
-            for a in range(5):
-                pygame.draw.line(body, (255, 220, 100, 120), (cx - 4, cy - 16), (cx - 14 - a * 2, cy - 28 - a), 1)
-        elif style == "VIOLET":
-            pygame.draw.circle(body, (255, 255, 255, 110), (cx - 18, cy - 10), 2)
-            pygame.draw.circle(body, (255, 180, 240, 110), (cx - 26, cy + 2), 1)
-        elif style == "MINT":
-            pygame.draw.arc(body, (120, 255, 180, 130), (cx - 34, cy - 8, 24, 18), 0.2, 2.8, 2)
-        elif style == "GHOST":
-            pygame.draw.ellipse(body, (240, 250, 255, 80), (cx - r + 2, cy - int(r * 0.62), int(r * 1.82), int(r * 1.32)))
-        elif style == "PIXEL":
-            pygame.draw.rect(body, (255, 255, 255, 140), (cx - 21, cy - 18, 4, 4))
-            pygame.draw.rect(body, (90, 255, 190, 140), (cx - 26, cy - 4, 4, 4))
+        pygame.draw.polygon(body, skin.bird_alt, wing_pts)
 
         img = pygame.transform.rotozoom(body, angle, 1.0)
         rect = img.get_rect(center=(self.x, self.y))
@@ -2826,7 +2943,7 @@ class Bird:
                     [(px, py - 4), (px + 3, py), (px, py + 4), (px - 3, py)],
                 )
 
-            for ang in np.linspace(0, math.tau, 8, endpoint=False):
+            for ang in BIRD_SHIELD_ARMS:
                 px = cx2 + int(math.cos(ang + self.shield * 0.9) * (ring_r + 9))
                 py = cy2 + int(math.sin(ang + self.shield * 0.9) * (ring_r + 9))
                 pygame.draw.line(shield_fx, (*skin.accent, int(18 + 22 * pulse)), (cx2, cy2), (px, py), 1)
@@ -3096,76 +3213,8 @@ class Orb:
         }
         color = color_map.get(self.kind, skin.accent)
 
-        size = 88
-        outer = pygame.Surface((size, size), pygame.SRCALPHA)
-        cx = cy = size // 2
-        glow_r = 22 + int(3 * pulse)
-        pygame.draw.circle(outer, (*color, 34 + int(20 * pulse)), (cx, cy), glow_r + 6)
-
-        if self.kind == "shield":
-            pygame.draw.circle(outer, (*color, 70), (cx, cy), 27 + int(2 * pulse), 2)
-            pts = [(cx, cy - 18), (cx + 16, cy - 7), (cx + 12, cy + 14), (cx, cy + 24), (cx - 12, cy + 14), (cx - 16, cy - 7)]
-            pygame.draw.polygon(outer, (*color, 225), pts)
-            pygame.draw.polygon(outer, (255, 255, 255, 120), [(cx, cy - 11), (cx + 8, cy - 3), (cx + 5, cy + 8), (cx, cy + 14), (cx - 5, cy + 8), (cx - 8, cy - 3)])
-            pygame.draw.line(outer, (255, 255, 255, 90), (cx - 10, cy), (cx + 10, cy), 2)
-            pygame.draw.line(outer, (255, 255, 255, 90), (cx, cy - 10), (cx, cy + 10), 2)
-            for i in range(4):
-                ang = rot * 0.01 + i * (math.tau / 4)
-                px = cx + int(math.cos(ang) * 21)
-                py = cy + int(math.sin(ang) * 21)
-                pygame.draw.circle(outer, (180, 245, 255, 150), (px, py), 2)
-        elif self.kind == "coin":
-            pygame.draw.circle(outer, (255, 230, 120, 220), (cx, cy), 16)
-            pygame.draw.circle(outer, (255, 250, 180, 230), (cx - 3, cy - 4), 6)
-            pygame.draw.arc(outer, (255, 200, 70, 220), (cx - 17, cy - 17, 34, 34), 0.2 + self.phase, 5.0 + self.phase, 4)
-            for ang in np.linspace(0, math.tau, 6, endpoint=False):
-                px = cx + int(math.cos(ang + self.phase) * 19)
-                py = cy + int(math.sin(ang + self.phase) * 19)
-                pygame.draw.line(outer, (255, 235, 160, 160), (cx, cy), (px, py), 1)
-        elif self.kind == "magnet":
-            pygame.draw.arc(outer, (255, 255, 255, 230), (cx - 14, cy - 14, 28, 28), math.pi * 0.12 + self.phase * 0.5, math.pi * 1.22 + self.phase * 0.5, 6)
-            pygame.draw.line(outer, (255, 255, 255, 230), (cx - 14, cy - 6), (cx - 14, cy + 10), 6)
-            pygame.draw.line(outer, (255, 255, 255, 230), (cx + 14, cy - 6), (cx + 14, cy + 10), 6)
-            for ang in np.linspace(0, math.tau, 5, endpoint=False):
-                px = cx + int(math.cos(ang + self.phase * 1.2) * 18)
-                py = cy + int(math.sin(ang + self.phase * 1.2) * 18)
-                pygame.draw.circle(outer, (255, 140, 140, 110), (px, py), 2)
-        elif self.kind == "boost":
-            bolt = [(cx - 1, cy - 20), (cx + 12, cy - 5), (cx + 3, cy - 4), (cx + 8, cy + 18), (cx - 14, cy - 1), (cx - 5, cy - 1)]
-            pygame.draw.polygon(outer, (255, 255, 255, 235), bolt)
-            pygame.draw.circle(outer, (160, 255, 180, 180), (cx, cy), 22, 2)
-            for ang in np.linspace(0, math.tau, 8, endpoint=False):
-                px = cx + int(math.cos(ang + self.phase) * 19)
-                py = cy + int(math.sin(ang + self.phase) * 19)
-                pygame.draw.line(outer, (180, 255, 200, 100), (cx, cy), (px, py), 1)
-        elif self.kind == "revive":
-            ring = 24 + int(2 * pulse)
-            pygame.draw.circle(outer, (255, 220, 150, 170), (cx, cy), ring, 3)
-            pygame.draw.circle(outer, (255, 248, 220, 220), (cx, cy), 11)
-            pygame.draw.polygon(outer, (255, 210, 120, 240), [(cx, cy - 18), (cx + 11, cy - 6), (cx + 5, cy - 6), (cx + 8, cy + 8), (cx, cy + 16), (cx - 8, cy + 8), (cx - 5, cy - 6), (cx - 11, cy - 6)])
-            pygame.draw.rect(outer, (120, 70, 30, 220), (cx - 3, cy - 4, 6, 16), border_radius=2)
-            pygame.draw.line(outer, (255, 255, 255, 150), (cx - 10, cy - 1), (cx + 10, cy - 1), 2)
-            for ang in np.linspace(0, math.tau, 6, endpoint=False):
-                px = cx + int(math.cos(ang + self.phase * 1.5) * (ring - 4))
-                py = cy + int(math.sin(ang + self.phase * 1.5) * (ring - 4))
-                pygame.draw.circle(outer, (255, 240, 180, 180), (px, py), 2)
-        elif self.kind == "multiplier":
-            pygame.draw.circle(outer, (255, 210, 255, 60), (cx, cy), 23)
-            draw_text(outer, get_cached_sysfont("arial", 18, bold=True), "X2", (cx, cy - 10), WHITE, center=True, shadow=False)
-            pygame.draw.arc(outer, (255, 210, 255, 200), (cx - 21, cy - 21, 42, 42), self.phase * 1.2, self.phase * 1.2 + 4.0, 3)
-        elif self.kind == "core":
-            pygame.draw.polygon(outer, (255, 240, 210, 245), [(cx, cy - 20), (cx + 15, cy - 8), (cx + 10, cy + 10), (cx, cy + 20), (cx - 10, cy + 10), (cx - 15, cy - 8)])
-            pygame.draw.circle(outer, (255, 140, 90, 220), (cx, cy), 4)
-            pygame.draw.circle(outer, (255, 210, 160, 110), (cx, cy), 24, 2)
-        else:
-            pygame.draw.circle(outer, (*color, 180), (cx, cy), 18)
-
-        for i in range(4):
-            ang = self.phase * 1.5 + i * (math.tau / 4)
-            px = cx + int(math.cos(ang) * 28)
-            py = cy + int(math.sin(ang) * 28)
-            pygame.draw.circle(outer, (*color, 120), (px, py), 2)
-
+        phase_bucket = int((self.phase % math.tau) / math.tau * ORB_PHASE_BUCKETS)
+        outer = get_orb_body_surface(self.kind, color, phase_bucket)
         img = pygame.transform.rotozoom(outer, rot, 1.0)
         rect = img.get_rect(center=(int(x), int(y)))
         surf.blit(img, rect)
@@ -7289,27 +7338,37 @@ class Game:
     def draw_pipes_orbs_projectiles(self, surf: pygame.Surface):
         theme = self.current_theme()
         pulse = 0.5 + 0.5 * math.sin(self.time_alive * 4.0)
-        boss_spec = self.boss.spec() if self.boss_mode and self.boss else None
-        boss_phase = self.boss.phase if self.boss_mode and self.boss else 1
-        boss_timer = self.boss.phase_timer if self.boss_mode and self.boss else self.time_alive
+        boss_active = self.boss_mode and self.boss is not None
+        boss_spec = self.boss.spec() if boss_active else None
+        boss_phase = self.boss.phase if boss_active else 1
+        boss_timer = self.boss.phase_timer if boss_active else self.time_alive
+        ring_alpha = int(100 + 90 * pulse)
+
         for pipe in self.pipes:
             pipe.draw(surf, theme, pulse=pulse, boss_spec=boss_spec, boss_phase=boss_phase, boss_timer=boss_timer)
-            if self.boss_mode and self.boss:
+            if boss_active and self.boss.hp > 0:
                 gap = pipe.gap_rect()
-                if self.boss.hp > 0 and gap.width > 0:
+                if gap.width > 0:
                     phase = self.boss.phase
-                    spec = self.boss.spec()
-                    ring = get_pipe_gap_ring_surface((gap.width + 54, gap.height + 54), phase, spec["accent"], spec["core"]).copy()
-                    a = int(100 + 90 * pulse)
-                    ring.set_alpha(a)
+                    spec = boss_spec
+                    ring = get_pipe_gap_ring_surface(
+                        (gap.width + 54, gap.height + 54),
+                        phase,
+                        spec["accent"],
+                        spec["core"],
+                        alpha=ring_alpha,
+                    )
                     surf.blit(ring, ring.get_rect(center=gap.center))
 
+        bird_skin = self.bird.skin()
         for orb in self.orbs:
-            orb.draw(surf, self.bird.skin())
+            orb.draw(surf, bird_skin)
         for proj in self.projectiles:
             proj.draw(surf)
 
     def draw_particles(self, surf: pygame.Surface):
+        if not self.particles and not self.texts:
+            return
         for p in self.particles:
             p.draw(surf)
         for t in self.texts:
@@ -7325,8 +7384,18 @@ class Game:
         # ─────────────────────────────────────────────────────────────────────
         self.draw_pipes_orbs_projectiles(surf)
         self.bird.draw(surf)
-        if self.boss_mode and self.boss:
+
+        boss_needs_env_redraw = bool(
+            self.boss_mode
+            and self.boss
+            and (
+                (self.env_lightning_timer > 0 and bool(self.env_lightning_bolts))
+                or self.env_darkness > 0.10
+            )
+        )
+        if self.boss_mode and self.boss and not boss_needs_env_redraw:
             self.boss.draw(surf, self.font, self.current_difficulty())
+
         self.draw_particles(surf)
         # ── Boss environment foreground layer ────────────────────────────────
         if self.boss_mode:
@@ -7357,6 +7426,7 @@ class Game:
             draw_text(surf, self.font, "Esc = Menu   R = Replay", (WIDTH // 2, HEIGHT // 2 + 60), WHITE, center=True, shadow=False)
             self.draw_clear_buttons(surf)
         elif self.state == "GAME_OVER":
+
             surf.blit(self.get_overlay((WIDTH, HEIGHT), (12, 14, 20, 190)), (0, 0))
             draw_text(surf, self.font_huge, "Game Over", (WIDTH // 2, HEIGHT // 2 - 72), (255, 255, 255), center=True)
             coins_earned = int(self.run_stats.get("coins_earned", 0))
@@ -8889,7 +8959,7 @@ class Game:
             if grect.size == self.screen.get_size():
                 self._window.blit(self.screen, grect.topleft)
             else:
-                scaled = pygame.transform.smoothscale(self.screen, grect.size)
+                scaled = pygame.transform.scale(self.screen, grect.size)
                 self._window.blit(scaled, grect.topleft)
             pygame.display.flip()
 
