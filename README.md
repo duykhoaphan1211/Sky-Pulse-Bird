@@ -4,7 +4,7 @@ A game created **100% by AI** is an upgraded version of Flappy Bird featuring ne
 
 Chatbots like Gemini or ChatGPT can be used to analyze the game to understand shortcuts, mechanics,...
 
-Need 2 dependence libraries: **Pygame-ce** & **Numpy!**
+Need 2 dependence libraries: [**Pygame-ce**](https://pypi.org/project/pygame-ce/) & [**Numpy**](https://pypi.org/project/numpy/)
 
 # SET UP (FOR WINDOWS USERS, STILL work on OTHER OS, but I only use Windows):
 - Install Python: [3.14.4](https://www.python.org/ftp/python/3.14.4/python-3.14.4-amd64.exe)
