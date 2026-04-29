@@ -6,6 +6,11 @@ Chatbots like Gemini or ChatGPT can be used to analyze the game to understand sh
 
 Need 2 dependence libraries: [**Pygame-ce**](https://pypi.org/project/pygame-ce/) & [**Numpy**](https://pypi.org/project/numpy/)
 
+# Minimum Requirements
+
+- OS: **Windows 10 & newer**, MacOS and Linux: I don't know about them.
+- Computer Architecture: **64-bit (x64)**
+
 # SET UP (FOR WINDOWS USERS, STILL work on OTHER OS, but I only use Windows):
 - Install Python: [3.14.4](https://www.python.org/ftp/python/3.14.4/python-3.14.4-amd64.exe)
 - (Search) and Go to **"Command Prompt"** software and type: **pip install pygame-ce** and press Enter, then **pip install numpy** and press Enter.
