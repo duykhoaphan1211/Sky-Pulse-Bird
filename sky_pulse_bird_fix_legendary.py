@@ -7090,11 +7090,11 @@ class Game:
             if not pipe.scored and pipe.x + pipe.width < self.bird.x:
                 pipe.scored = True
                 self.score += 1
-                self.coins += 2
-                self.profile_totals["coins_collected"] = int(self.profile_totals.get("coins_collected", 0)) + 2
+                self.coins += 1
+                self.profile_totals["coins_collected"] = int(self.profile_totals.get("coins_collected", 0)) + 1
                 self.profile_totals["pipes_scored"] = int(self.profile_totals.get("pipes_scored", 0)) + 1
                 self.profile_totals["score_total"] = int(self.profile_totals.get("score_total", 0)) + 1
-                self.run_stats["coins_earned"] += 2
+                self.run_stats["coins_earned"] += 1
                 self.run_stats["pipes_scored"] += 1
                 self.combo += 1
                 self.run_stats["best_combo"] = max(int(self.run_stats.get("best_combo", 0)), int(self.combo))
