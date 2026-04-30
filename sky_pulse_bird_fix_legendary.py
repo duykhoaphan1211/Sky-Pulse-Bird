@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
+import time
 from datetime import date
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,9 +24,9 @@ WIDTH, HEIGHT = 960, 540
 FPS = 60
 SAVE_FILE = Path(__file__).with_name("sky_pulse_bird_legendary_save.json")
 GAME_TITLE = "Sky Pulse Bird"
-
 WHITE = (245, 245, 245)
 BLACK = (15, 18, 26)
+MAGNET_RANGE = 320
 
 def clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
@@ -57,7 +59,6 @@ QUEST_TEMPLATES = {
         {"key": "flaps", "title": "Sky Rhythm", "desc": "Flap {target} times.", "stat": "flaps", "target": (35, 65), "reward": (40, 75), "icon": "wing"},
         {"key": "items", "title": "Supply Run", "desc": "Collect {target} items.", "stat": "items_total", "target": (6, 12), "reward": (50, 85), "icon": "crate"},
         {"key": "time", "title": "Long Glide", "desc": "Play for {target} seconds.", "stat": "play_time", "target": (90, 150), "reward": (45, 80), "icon": "clock"},
-        {"key": "boosts", "title": "Boost Charge", "desc": "Collect {target} boost items.", "stat": "item:boost", "target": (2, 5), "reward": (50, 85), "icon": "bolt"},
         {"key": "shields", "title": "Shield Drill", "desc": "Block {target} hits with a shield.", "stat": "shield_breaks", "target": (2, 4), "reward": (55, 90), "icon": "shield"},
     ],
     "weekly": [
@@ -125,8 +126,6 @@ def build_gradient_surface(top: Tuple[int, int, int], bottom: Tuple[int, int, in
     arr[:] = grad[:, None, :].astype(np.uint8)
     return pygame.surfarray.make_surface(arr.swapaxes(0, 1))
 
-
-
 def get_cloud_surface(scale: float, color: Tuple[int, int, int]) -> pygame.Surface:
     scale = max(0.3, float(scale))
     w = max(18, int(90 * scale))
@@ -141,7 +140,6 @@ def get_cloud_surface(scale: float, color: Tuple[int, int, int]) -> pygame.Surfa
         pygame.draw.ellipse(cloud, c, (w * 0.53, 12, w * 0.40, h * 0.68))
         _CLOUD_CACHE[key] = cloud
     return cloud
-
 
 def build_arcade_background_scene(theme: dict, theme_index: int) -> dict:
     base = build_gradient_surface(theme["sky_top"], theme["sky_bottom"]).convert()
@@ -400,8 +398,11 @@ _PARTICLE_CACHE = {}
 _CLOUD_CACHE = {}
 _PIPE_GAP_RING_CACHE = {}
 _WORK_SURFACE_CACHE = {}
+_TRANSFORM_CACHE = {}
+_TEXT_ALPHA_CACHE = {}
 _BIRD_BODY_CACHE = {}
 _ORB_BODY_CACHE = {}
+_BOSS_PROJECTILE_BODY_CACHE = {}
 ORB_PHASE_BUCKETS = 12
 ORB_ARMS_4 = tuple((math.tau * i) / 4.0 for i in range(4))
 ORB_ARMS_5 = tuple((math.tau * i) / 5.0 for i in range(5))
@@ -409,6 +410,18 @@ ORB_ARMS_6 = tuple((math.tau * i) / 6.0 for i in range(6))
 ORB_ARMS_8 = tuple((math.tau * i) / 8.0 for i in range(8))
 ORB_ARMS_16 = tuple((math.tau * i) / 16.0 for i in range(16))
 BIRD_SHIELD_ARMS = tuple((math.tau * i) / 8.0 for i in range(8))
+RING_ARMS_6 = tuple((math.tau * i) / 6.0 for i in range(6))
+RING_ARMS_8 = tuple((math.tau * i) / 8.0 for i in range(8))
+RING_ARMS_10 = tuple((math.tau * i) / 10.0 for i in range(10))
+RING_ARMS_12 = tuple((math.tau * i) / 12.0 for i in range(12))
+RING_ARMS_14 = tuple((math.tau * i) / 14.0 for i in range(14))
+ORB_COLOR_MAP = {
+    "shield": (100, 230, 255),
+    "coin": (255, 220, 100),
+    "magnet": (255, 120, 120),
+    "multiplier": (255, 175, 255),
+    "core": (255, 150, 90),
+}
 
 
 def _trim_cache(cache: dict, limit: int):
@@ -418,53 +431,151 @@ def _trim_cache(cache: dict, limit: int):
         except StopIteration:
             break
 
+def get_cached_rotated_surface(
+    surface: pygame.Surface,
+    angle: float,
+    *,
+    key=None,
+    scale: float = 1.0,
+    angle_step: float = 1.0,
+) -> pygame.Surface:
+    angle = float(angle)
+    scale = float(scale)
+    if abs(angle) < 1e-9 and abs(scale - 1.0) < 1e-9:
+        return surface
+    angle_step = max(0.1, float(angle_step))
+    angle_bucket = int(round(angle / angle_step))
+    scale_bucket = int(round(scale * 64.0))
+    cache_key = (key or id(surface), surface.get_size(), angle_bucket, scale_bucket)
+    img = _TRANSFORM_CACHE.get(cache_key)
+    if img is None:
+        if abs(scale - 1.0) < 1e-9:
+            img = pygame.transform.rotate(surface, angle_bucket * angle_step)
+        else:
+            img = pygame.transform.rotozoom(surface, angle_bucket * angle_step, scale)
+        _TRANSFORM_CACHE[cache_key] = img
+        _trim_cache(_TRANSFORM_CACHE, 512)
+    return img
+
 
 def fast_rotate_surface(surface: pygame.Surface, angle: float) -> pygame.Surface:
-    """Rotate only when necessary; avoids the extra scaling work of rotozoom."""
-    angle = float(angle)
-    if -1e-9 < angle < 1e-9:
-        return surface
-    return pygame.transform.rotate(surface, angle)
-
+    return get_cached_rotated_surface(surface, angle)
 
 def retain_positive_life(items):
     """Compact an in-memory list of objects that expose a positive `life` field."""
     write = 0
-    for item in items:
+    for read, item in enumerate(items):
         if item.life > 0:
-            items[write] = item
+            if write != read:
+                items[write] = item
             write += 1
-    del items[write:]
-
+        else:
+            if isinstance(item, Particle):
+                return_particle_to_pool(item)
+            elif isinstance(item, FloatingText):
+                return_text_to_pool(item)
+    if write < len(items):
+        del items[write:]
 
 def retain_active_orbs(items):
     """Compact orbit/item lists while preserving their current order."""
     write = 0
-    for item in items:
+    for read, item in enumerate(items):
         if item.active and item.x > -80:
-            items[write] = item
+            if write != read:
+                items[write] = item
             write += 1
-    del items[write:]
-
+        else:
+            return_orb_to_pool(item)
+    if write < len(items):
+        del items[write:]
 
 def retain_projectiles(items):
     """Compact projectile lists using the same culling window as the original code."""
     write = 0
-    for item in items:
+    for read, item in enumerate(items):
         if -80 < item.x < WIDTH + 80 and -80 < item.y < HEIGHT + 80:
-            items[write] = item
+            if write != read:
+                items[write] = item
             write += 1
-    del items[write:]
-
+        else:
+            return_projectile_to_pool(item)
+    if write < len(items):
+        del items[write:]
 
 def retain_clouds(items):
     """Compact cloud lists without allocating a fresh list every frame."""
     write = 0
-    for item in items:
+    for read, item in enumerate(items):
         if item.x > -180:
-            items[write] = item
+            if write != read:
+                items[write] = item
             write += 1
-    del items[write:]
+    if write < len(items):
+        del items[write:]
+
+
+def rect_intersects_view(rect: pygame.Rect, margin: int = 0) -> bool:
+    """Fast screen-space culling helper for draw hot paths."""
+    return not (
+        rect.right < -margin
+        or rect.left > WIDTH + margin
+        or rect.bottom < -margin
+        or rect.top > HEIGHT + margin
+    )
+
+# Object pools for frequently created objects
+_PARTICLE_POOL: List[Particle] = []
+_PROJECTILE_POOL: List[BossProjectile] = []
+_ORB_POOL: List[Orb] = []
+_TEXT_POOL: List[FloatingText] = []
+
+def get_particle_from_pool() -> Particle:
+    """Get a particle from pool or create new one."""
+    if _PARTICLE_POOL:
+        return _PARTICLE_POOL.pop()
+    return Particle(0, 0, 0, 0, 0, 1, (255, 255, 255))
+
+def return_particle_to_pool(p: Particle):
+    """Return particle to pool for reuse."""
+    if len(_PARTICLE_POOL) < 500:
+        p.life = 0
+        _PARTICLE_POOL.append(p)
+
+def get_text_from_pool() -> FloatingText:
+    """Get a floating text from pool or create new one."""
+    if _TEXT_POOL:
+        return _TEXT_POOL.pop()
+    return FloatingText("", 0, 0, 0, 0, (255, 255, 255))
+
+def return_text_to_pool(t: FloatingText):
+    """Return text to pool for reuse."""
+    if len(_TEXT_POOL) < 200:
+        t.life = 0
+        _TEXT_POOL.append(t)
+
+
+def get_orb_from_pool() -> Orb:
+    if _ORB_POOL:
+        return _ORB_POOL.pop()
+    return Orb(0.0, 0.0, "coin")
+
+
+def return_orb_to_pool(orb: Orb):
+    if len(_ORB_POOL) < 128:
+        orb.active = False
+        _ORB_POOL.append(orb)
+
+
+def get_projectile_from_pool() -> BossProjectile:
+    if _PROJECTILE_POOL:
+        return _PROJECTILE_POOL.pop()
+    return BossProjectile(0.0, 0.0, 0.0, 0.0, 8)
+
+
+def return_projectile_to_pool(proj: BossProjectile):
+    if len(_PROJECTILE_POOL) < 256:
+        _PROJECTILE_POOL.append(proj)
 
 def get_pipe_gap_ring_surface(
     size: tuple[int, int],
@@ -518,7 +629,6 @@ def get_cached_sysfont(name: str, size: int, bold: bool = False, italic: bool = 
         _SYSFONT_CACHE[key] = font
     return font
 
-
 def render_text_cached(font, text: str, color: Tuple[int, int, int]):
     key = (id(font), str(text), tuple(color))
     img = _TEXT_CACHE.get(key)
@@ -528,6 +638,21 @@ def render_text_cached(font, text: str, color: Tuple[int, int, int]):
         _trim_cache(_TEXT_CACHE, 1600)
     return img
 
+
+def get_text_alpha_surface(font, text: str, color: Tuple[int, int, int], alpha: int) -> pygame.Surface:
+    base = render_text_cached(font, text, color)
+    alpha = max(0, min(255, int(alpha)))
+    bucket = (alpha // 8) * 8
+    if bucket >= 248:
+        return base
+    key = (id(font), str(text), tuple(color), bucket)
+    img = _TEXT_ALPHA_CACHE.get(key)
+    if img is None:
+        img = base.copy()
+        img.set_alpha(bucket)
+        _TEXT_ALPHA_CACHE[key] = img
+        _trim_cache(_TEXT_ALPHA_CACHE, 960)
+    return img
 
 def get_particle_surface(radius: int, color: Tuple[int, int, int], alpha: int):
     radius = max(1, int(radius))
@@ -543,8 +668,6 @@ def get_particle_surface(radius: int, color: Tuple[int, int, int], alpha: int):
         _trim_cache(_PARTICLE_CACHE, 4096)
     return surf
 
-
-
 def get_clear_surface(size: tuple[int, int], key):
     """Return a reusable transparent surface cleared for immediate drawing."""
     size = (int(size[0]), int(size[1]))
@@ -557,7 +680,6 @@ def get_clear_surface(size: tuple[int, int], key):
     else:
         surf.fill((0, 0, 0, 0))
     return surf
-
 
 def get_bird_body_surface(skin: Skin, radius: int) -> pygame.Surface:
     """Return the static (non-wing) bird sprite for a skin/radius pair."""
@@ -620,7 +742,6 @@ def get_bird_body_surface(skin: Skin, radius: int) -> pygame.Surface:
         _trim_cache(_BIRD_BODY_CACHE, 128)
     return surf
 
-
 def get_orb_body_surface(kind: str, color: Tuple[int, int, int], phase_bucket: int, size: int = 88) -> pygame.Surface:
     """Return a cached orb sprite body before the final rotation."""
     size = max(24, int(size))
@@ -664,25 +785,6 @@ def get_orb_body_surface(kind: str, color: Tuple[int, int, int], phase_bucket: i
             px = cx + int(math.cos(ang + phase * 1.2) * 18)
             py = cy + int(math.sin(ang + phase * 1.2) * 18)
             pygame.draw.circle(surf, (255, 140, 140, 110), (px, py), 2)
-    elif kind == "boost":
-        bolt = [(cx - 1, cy - 20), (cx + 12, cy - 5), (cx + 3, cy - 4), (cx + 8, cy + 18), (cx - 14, cy - 1), (cx - 5, cy - 1)]
-        pygame.draw.polygon(surf, (255, 255, 255, 235), bolt)
-        pygame.draw.circle(surf, (160, 255, 180, 180), (cx, cy), 22, 2)
-        for ang in ORB_ARMS_8:
-            px = cx + int(math.cos(ang + phase) * 19)
-            py = cy + int(math.sin(ang + phase) * 19)
-            pygame.draw.line(surf, (180, 255, 200, 100), (cx, cy), (px, py), 1)
-    elif kind == "revive":
-        ring = 24 + int(2 * pulse)
-        pygame.draw.circle(surf, (255, 220, 150, 170), (cx, cy), ring, 3)
-        pygame.draw.circle(surf, (255, 248, 220, 220), (cx, cy), 11)
-        pygame.draw.polygon(surf, (255, 210, 120, 240), [(cx, cy - 18), (cx + 11, cy - 6), (cx + 5, cy - 6), (cx + 8, cy + 8), (cx, cy + 16), (cx - 8, cy + 8), (cx - 5, cy - 6), (cx - 11, cy - 6)])
-        pygame.draw.rect(surf, (120, 70, 30, 220), (cx - 3, cy - 4, 6, 16), border_radius=2)
-        pygame.draw.line(surf, (255, 255, 255, 150), (cx - 10, cy - 1), (cx + 10, cy - 1), 2)
-        for ang in ORB_ARMS_6:
-            px = cx + int(math.cos(ang + phase * 1.5) * (ring - 4))
-            py = cy + int(math.sin(ang + phase * 1.5) * (ring - 4))
-            pygame.draw.circle(surf, (255, 240, 180, 180), (px, py), 2)
     elif kind == "multiplier":
         pygame.draw.circle(surf, (255, 210, 255, 60), (cx, cy), 23)
         draw_text(surf, get_cached_sysfont("arial", 18, bold=True), "X2", (cx, cy - 10), WHITE, center=True, shadow=False)
@@ -702,6 +804,150 @@ def get_orb_body_surface(kind: str, color: Tuple[int, int, int], phase_bucket: i
     _ORB_BODY_CACHE[key] = surf
     _trim_cache(_ORB_BODY_CACHE, 256)
     return surf
+
+
+def get_boss_projectile_body_surface(
+    boss_id: int,
+    radius: int,
+    spin_bucket: int,
+    kind: str,
+    accent: Tuple[int, int, int],
+    core: Tuple[int, int, int],
+    dark: Tuple[int, int, int],
+    body: Tuple[int, int, int],
+    is_hell: bool,
+) -> pygame.Surface:
+    """Return a cached boss projectile body shell.
+
+    The cached shell keeps the expensive shape construction off the hot path
+    while still allowing a small animated trail and entry flash to be drawn
+    per frame.
+    """
+    radius = max(6, int(radius))
+    spin_bucket = int(spin_bucket) % ORB_PHASE_BUCKETS
+    key = (int(boss_id), radius, spin_bucket, str(kind), tuple(accent), tuple(core), tuple(dark), tuple(body), bool(is_hell))
+    surf = _BOSS_PROJECTILE_BODY_CACHE.get(key)
+    if surf is not None:
+        return surf
+
+    size = radius * 8 + 24
+    surf = pygame.Surface((size, size), pygame.SRCALPHA).convert_alpha()
+    cx = cy = size // 2
+    phase = (spin_bucket / float(ORB_PHASE_BUCKETS)) * math.tau
+    pulse = 0.78 + 0.22 * math.sin(phase * 0.8 + boss_id * 0.35)
+
+    # Soft glow foundation.
+    pygame.draw.circle(surf, (*accent, 28 + int(16 * pulse)), (cx, cy), radius * 2 + 8)
+    pygame.draw.circle(surf, (*core, 40 + int(18 * pulse)), (cx, cy), radius + 3)
+
+    if kind == "aegis":
+        pygame.draw.circle(surf, (*body, 230), (cx, cy), radius + 3, 3)
+        pygame.draw.circle(surf, (*accent, 200), (cx, cy), max(4, radius - 1), 1)
+        pygame.draw.polygon(surf, (*accent, 230), [(cx, cy - radius - 5), (cx + radius - 1, cy), (cx, cy + radius + 5), (cx - radius - 1, cy)])
+        pygame.draw.line(surf, (*body, 220), (cx - radius - 2, cy), (cx + radius + 2, cy), 2)
+        pygame.draw.line(surf, (*body, 220), (cx, cy - radius - 2), (cx, cy + radius + 2), 2)
+
+    elif kind == "tempest":
+        pts = [(cx - radius - 1, cy - 1), (cx - 1, cy - radius - 2), (cx + radius + 1, cy - 2), (cx + 2, cy + 1), (cx + radius + 4, cy + radius), (cx - radius // 2, cy + radius // 3)]
+        pygame.draw.polygon(surf, (*body, 240), pts)
+        pygame.draw.polygon(surf, (*core, 230), [(cx - radius // 2, cy - radius // 3), (cx + radius // 6, cy - radius // 6), (cx, cy + radius // 2), (cx - radius // 3, cy + radius // 7)])
+        pygame.draw.arc(surf, (*accent, 220), (cx - radius * 2 + 3, cy - radius * 2 + 3, radius * 4 - 6, radius * 4 - 6), 0.3 + phase * 0.15, 4.1 + phase * 0.15, 2)
+
+    elif kind == "void":
+        pygame.draw.circle(surf, (*dark, 235), (cx, cy), radius + 5)
+        pygame.draw.circle(surf, (*accent, 180), (cx, cy), radius * 2, 2)
+        pygame.draw.circle(surf, (*core, 170), (cx + 4, cy - 2), max(2, radius // 2), 2)
+        pygame.draw.arc(surf, (*accent, 220), (cx - radius * 2 + 4, cy - radius * 2 + 4, radius * 4 - 8, radius * 4 - 8), 0.25 + phase * 0.18, 4.0 + phase * 0.18, 2)
+
+    elif kind == "chrono":
+        pygame.draw.circle(surf, (*body, 230), (cx, cy), radius + 1)
+        pygame.draw.circle(surf, (*accent, 180), (cx, cy), radius * 2, 2)
+        pygame.draw.circle(surf, (*core, 220), (cx, cy), max(3, radius // 2))
+        hand = phase * 1.3
+        pygame.draw.line(surf, (*accent, 210), (cx, cy), (cx + int(math.cos(hand) * (radius + 7)), cy + int(math.sin(hand) * (radius + 7))), 2)
+        pygame.draw.line(surf, (*core, 190), (cx, cy), (cx + int(math.cos(hand * 0.5 + 1.8) * (radius + 4)), cy + int(math.sin(hand * 0.5 + 1.8) * (radius + 4))), 1)
+
+    elif kind == "prism":
+        pygame.draw.polygon(surf, (*body, 235), [(cx, cy - radius - 4), (cx + radius + 4, cy - 1), (cx + 4, cy + radius + 4), (cx - radius - 4, cy + 1)])
+        pygame.draw.polygon(surf, (*core, 225), [(cx, cy - radius // 2), (cx + radius // 2, cy), (cx, cy + radius // 2), (cx - radius // 2, cy)])
+        pygame.draw.arc(surf, (*accent, 220), (cx - radius * 2 + 5, cy - radius * 2 + 5, radius * 4 - 10, radius * 4 - 10), 0.7, 5.4, 2)
+
+    elif kind == "bloom":
+        petal = radius + 7
+        for ang in (0, math.pi * 0.5, math.pi, math.pi * 1.5):
+            px = cx + int(math.cos(ang + phase * 0.05) * petal)
+            py = cy + int(math.sin(ang + phase * 0.05) * petal * 0.88)
+            pygame.draw.ellipse(surf, (*body, 230), (px - 6, py - 11, 12, 22))
+        pygame.draw.circle(surf, (*core, 230), (cx, cy), max(3, radius // 2))
+
+    elif kind == "ember":
+        if is_hell:
+            pts = [(cx - 5, cy - radius - 2), (cx + 4, cy - radius // 2), (cx + radius + 4, cy - 2), (cx + radius // 2, cy + radius // 2), (cx + radius + 2, cy + radius + 2), (cx + 1, cy + radius // 2), (cx - radius // 2, cy + radius + 3), (cx - radius - 3, cy + 2)]
+        else:
+            pts = [(cx - 2, cy - radius - 2), (cx + radius // 2, cy - radius // 3), (cx + 2, cy + radius // 4), (cx + radius + 4, cy + radius + 2), (cx - radius // 2, cy + radius // 2), (cx - 3, cy - 1)]
+        pygame.draw.polygon(surf, (*body, 240), pts)
+        pygame.draw.circle(surf, (*core, 230), (cx, cy), max(3, radius // 2))
+
+    elif kind == "tide":
+        pygame.draw.arc(surf, (*body, 235), (cx - radius * 2 + 4, cy - radius * 2 + 8, radius * 4 - 8, radius * 4 - 10), 0.2, 3.0, 3)
+        pygame.draw.arc(surf, (*core, 220), (cx - radius * 2 + 10, cy - radius * 2 + 14, radius * 4 - 20, radius * 4 - 22), 0.5, 2.6, 2)
+        pygame.draw.circle(surf, (*core, 230), (cx, cy + 1), max(3, radius // 2))
+
+    elif kind == "frost":
+        pygame.draw.polygon(surf, (*body, 235), [(cx, cy - radius - 4), (cx + radius // 2 + 4, cy - 2), (cx + 3, cy + radius + 4), (cx - radius // 2 - 4, cy + 2)])
+        pygame.draw.polygon(surf, (*core, 235), [(cx, cy - radius // 2), (cx + radius // 3, cy), (cx + 2, cy + radius // 3), (cx - radius // 4, cy + 2)])
+        pygame.draw.line(surf, (*accent, 220), (cx - radius - 2, cy + radius // 2), (cx + radius + 2, cy - radius // 2), 2)
+
+    elif kind == "stellar":
+        pygame.draw.polygon(surf, (*body, 235), [(cx, cy - radius - 3), (cx + radius // 2, cy - radius // 4), (cx + radius + 4, cy), (cx + radius // 2, cy + radius // 4), (cx, cy + radius + 3), (cx - radius // 2, cy + radius // 4), (cx - radius + 4, cy), (cx - radius // 2, cy - radius // 4)])
+        pygame.draw.circle(surf, (*core, 220), (cx, cy), max(3, radius // 2))
+
+    elif kind == "obsidian":
+        pygame.draw.polygon(surf, (*dark, 235), [(cx - 2, cy - radius - 2), (cx + radius + 3, cy - radius // 2), (cx + radius // 2, cy + radius + 3), (cx - radius - 4, cy + radius // 3), (cx - radius // 2, cy - radius // 3)])
+        pygame.draw.polygon(surf, (*core, 220), [(cx + 1, cy - radius // 2), (cx + radius // 3, cy), (cx + 2, cy + radius // 3), (cx - radius // 4, cy + 1)])
+
+    elif kind == "nova":
+        for a in range(8):
+            ang = phase * 0.42 + a * (math.tau / 8)
+            px = cx + int(math.cos(ang) * (radius + 6))
+            py = cy + int(math.sin(ang) * (radius + 6))
+            pygame.draw.line(surf, (*core, 210), (cx, cy), (px, py), 2)
+        pygame.draw.circle(surf, (*core, 230), (cx, cy), max(3, radius // 2))
+
+    elif kind == "rift":
+        pygame.draw.arc(surf, (*accent, 220), (cx - radius * 2 + 4, cy - radius * 2 + 4, radius * 4 - 8, radius * 4 - 8), 0.6 + phase * 0.16, 4.9 + phase * 0.16, 2)
+        pygame.draw.polygon(surf, (*dark, 235), [(cx - radius, cy), (cx, cy - radius - 2), (cx + radius, cy), (cx, cy + radius + 2)])
+        pygame.draw.circle(surf, (*core, 210), (cx + 3, cy - 2), max(2, radius // 3))
+
+    elif kind == "thorn":
+        pygame.draw.polygon(surf, (*body, 235), [(cx - 2, cy - radius - 2), (cx + radius // 2 + 2, cy - 2), (cx + 2, cy + radius // 3), (cx + radius + 3, cy + radius + 3), (cx - radius // 2 - 3, cy + radius // 3), (cx - 1, cy - 1)])
+        pygame.draw.line(surf, (*core, 220), (cx - radius - 2, cy - radius // 2), (cx + radius + 2, cy + radius // 2), 2)
+        pygame.draw.circle(surf, (*core, 220), (cx, cy), max(3, radius // 2))
+
+    elif kind == "sentinel":
+        pygame.draw.polygon(surf, (*body, 235), [(cx, cy - radius - 3), (cx + radius + 3, cy - 3), (cx + radius // 2, cy + radius + 4), (cx - radius // 2, cy + radius + 4), (cx - radius - 3, cy - 3)])
+        pygame.draw.polygon(surf, (*core, 240), [(cx, cy - radius // 2), (cx + radius // 3, cy), (cx, cy + radius // 2), (cx - radius // 3, cy)])
+        pygame.draw.line(surf, (*accent, 210), (cx - radius - 2, cy), (cx + radius + 2, cy), 2)
+
+    else:  # aurora and fallback
+        pygame.draw.arc(surf, (*body, 230), (cx - radius * 2 + 4, cy - radius * 2 + 4, radius * 4 - 8, radius * 4 - 8), 0.7, 5.5, 2)
+        pygame.draw.arc(surf, (*core, 220), (cx - radius * 2 + 10, cy - radius * 2 + 10, radius * 4 - 20, radius * 4 - 20), 1.0, 5.0, 2)
+        pygame.draw.circle(surf, (*core, 230), (cx, cy), max(3, radius // 2))
+
+    # Small rotating ornaments, quantized into a tiny cache so the draw step
+    # remains cheap even with many boss projectiles on screen.
+    if kind in {"aegis", "tempest", "void", "chrono", "prism", "bloom", "ember", "tide", "frost", "stellar", "obsidian", "nova", "rift", "thorn", "sentinel", "aurora"}:
+        for i in range(4):
+            ang = phase * 1.15 + i * (math.tau / 4)
+            rr = radius + 8
+            px = cx + int(math.cos(ang) * rr)
+            py = cy + int(math.sin(ang) * rr * 0.86)
+            pygame.draw.circle(surf, (*accent, 120), (px, py), 2)
+
+    _BOSS_PROJECTILE_BODY_CACHE[key] = surf
+    _trim_cache(_BOSS_PROJECTILE_BODY_CACHE, 384)
+    return surf
+
 
 class SoundBank:
     def __init__(self):
@@ -727,6 +973,17 @@ class SoundBank:
                 self.sounds["bsod_shock"] = self._bsod_shock_sound(1.2, 0.98)
                 self.sounds["chaos_surge"] = self._chaos_surge_sound(2.2, 0.82)
                 self.sounds["static_crackle"] = self._static_crackle_sound(0.10, 0.70)
+                # ── Unique per-item pickup sounds ────────────────────────────
+                self.sounds["item_shield"]     = self._item_shield_sound()
+                self.sounds["item_coin"]       = self._item_coin_sound()
+                self.sounds["item_magnet"]     = self._item_magnet_sound()
+                self.sounds["item_multiplier"] = self._item_multiplier_sound()
+                self.sounds["item_core"]       = self._item_core_sound()
+                # ── Unique per-boss phase & death sounds ─────────────────────
+                for _spec in BOSS_SPECS:
+                    _s = _spec["short"].lower()
+                    self.sounds[f"boss_phase_{_s}"] = self._boss_phase_sound(_spec["short"])
+                    self.sounds[f"boss_death_{_s}"] = self._boss_death_sound(_spec["short"])
             self.enabled = True
             try:
                 pygame.mixer.unpause()
@@ -873,6 +1130,521 @@ class SoundBank:
         stereo = np.column_stack([arr, arr])
         return pygame.sndarray.make_sound(stereo)
 
+    # ── Per-boss phase-change & defeat sounds ───────────────────────────────
+
+    def _boss_phase_sound(self, short: str) -> "pygame.mixer.Sound":
+        """Unique power-surge sound for each boss's phase transition."""
+        sr = 44100
+        s = short.upper()
+
+        if s == "AEGIS":
+            # Metallic shield resonance — ringing alloy + force-field pulse
+            dur = 0.32
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-4.2 * t / dur) * (1 - np.exp(-60 * t))
+            ring = np.sin(2 * np.pi * 980 * t) + 0.45 * np.sin(2 * np.pi * 1960 * t)
+            sweep = np.sin(2 * np.pi * np.linspace(400, 1400, len(t)) * t)
+            metal = 0.22 * np.sin(2 * np.pi * 3100 * t) * np.exp(-20 * t)
+            wave = (ring * 0.52 + sweep * 0.30 + metal) * env * 0.50
+
+        elif s == "TEMPEST":
+            # Wind surge + sharp lightning snap
+            dur = 0.30
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.8 * t / dur) * (1 - np.exp(-50 * t))
+            noise = (np.random.rand(len(t)) * 2 - 1)
+            wind_env = np.exp(-2.5 * t / dur)
+            wind = noise * wind_env * 0.55
+            freq_crack = np.linspace(3200, 320, len(t))
+            phase_acc = np.cumsum(freq_crack / sr)
+            crack = np.sin(2 * np.pi * phase_acc) * np.exp(-18 * t) * 0.65
+            wave = (wind * 0.45 + crack * 0.55) * env * 0.50
+
+        elif s == "VOID":
+            # Deep bass sub-pulse + reality-warp FM modulation
+            dur = 0.38
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.8 * t / dur) * (1 - np.exp(-30 * t))
+            mod = np.sin(2 * np.pi * 4.5 * t) * 320
+            carrier_phase = np.cumsum((80 + mod) / sr)
+            sub = np.sin(2 * np.pi * carrier_phase)
+            warp = 0.45 * np.sin(2 * np.pi * np.cumsum(np.linspace(600, 55, len(t)) / sr))
+            dark = 0.18 * (np.random.rand(len(t)) * 2 - 1) * np.exp(-6 * t)
+            wave = (sub * 0.55 + warp * 0.38 + dark) * env * 0.52
+
+        elif s == "CHRONO":
+            # Cascading clock chimes + time-stretch descending sweep
+            dur = 0.40
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.2 * t / dur) * (1 - np.exp(-40 * t))
+            # Three chime taps at different offsets
+            c1 = np.sin(2 * np.pi * 1046 * t) * np.exp(-18 * t)
+            c2 = np.sin(2 * np.pi * 1318 * t) * np.exp(-18 * np.maximum(t - 0.06, 0)) * (t >= 0.06)
+            c3 = np.sin(2 * np.pi * 1568 * t) * np.exp(-18 * np.maximum(t - 0.13, 0)) * (t >= 0.13)
+            stretch = 0.30 * np.sin(2 * np.pi * np.cumsum(np.linspace(1200, 180, len(t)) / sr))
+            wave = (c1 * 0.55 + c2 * 0.50 + c3 * 0.45 + stretch) * env * 0.42
+
+        elif s == "PRISM":
+            # Crystal harmonic burst + light-scatter shimmer
+            dur = 0.28
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-5.0 * t / dur) * (1 - np.exp(-80 * t))
+            crystal = (np.sin(2 * np.pi * 1760 * t)
+                       + 0.55 * np.sin(2 * np.pi * 2637 * t)
+                       + 0.35 * np.sin(2 * np.pi * 3520 * t))
+            shimmer = 0.20 * (np.random.rand(len(t)) * 2 - 1) * np.exp(-12 * t)
+            wave = (crystal * 0.55 + shimmer) * env * 0.44
+
+        elif s == "BLOOM":
+            # Organic low-pulse + vine-whip transient
+            dur = 0.34
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.5 * t / dur) * (1 - np.exp(-45 * t))
+            pulse_freq = 130 + 60 * np.sin(2 * np.pi * 6 * t)
+            pulse_phase = np.cumsum(pulse_freq / sr)
+            pulse = np.sin(2 * np.pi * pulse_phase) * 0.60
+            whip_env = np.exp(-28 * t)
+            whip = (np.random.rand(len(t)) * 2 - 1) * whip_env * 0.55
+            harmonic = 0.28 * np.sin(2 * np.pi * 420 * t) * np.exp(-8 * t)
+            wave = (pulse + whip + harmonic) * env * 0.48
+
+        elif s == "EMBER":
+            # Flame burst + searing ascending roar
+            dur = 0.35
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.0 * t / dur) * (1 - np.exp(-55 * t))
+            noise = (np.random.rand(len(t)) * 2 - 1) * 0.70
+            sear = np.sin(2 * np.pi * np.cumsum(np.linspace(200, 900, len(t)) / sr)) * 0.55
+            crackle = np.sign(np.sin(2 * np.pi * 85 * t)) * 0.20 * np.exp(-5 * t)
+            wave = (noise * 0.40 + sear * 0.45 + crackle) * env * 0.50
+
+        elif s == "TIDE":
+            # Deep ocean surge + crashing wave-break
+            dur = 0.42
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.5 * t / dur) * (1 - np.exp(-25 * t))
+            sub = np.sin(2 * np.pi * 55 * t + np.sin(2 * np.pi * 0.8 * t) * 4) * 0.55
+            rush_noise = (np.random.rand(len(t)) * 2 - 1) * 0.45 * np.exp(-2.8 * t / dur)
+            wave_tone = 0.35 * np.sin(2 * np.pi * np.cumsum(np.linspace(120, 380, len(t)) / sr))
+            wave = (sub + rush_noise + wave_tone) * env * 0.50
+
+        elif s == "FROST":
+            # Ice crystallization crack + freeze burst shimmer
+            dur = 0.30
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-4.5 * t / dur) * (1 - np.exp(-70 * t))
+            freeze = (np.sin(2 * np.pi * 2200 * t)
+                      + 0.45 * np.sin(2 * np.pi * 3100 * t)
+                      + 0.28 * np.sin(2 * np.pi * 4400 * t)) * np.exp(-10 * t)
+            crack_noise = (np.random.rand(len(t)) * 2 - 1) * 0.50 * np.exp(-25 * t)
+            sub_cold = 0.30 * np.sin(2 * np.pi * 180 * t) * np.exp(-8 * t)
+            wave = (freeze * 0.50 + crack_noise + sub_cold) * env * 0.46
+
+        elif s == "STELLAR":
+            # Stellar pulse — deep-space low boom + sparkling energy surge
+            dur = 0.40
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.0 * t / dur) * (1 - np.exp(-35 * t))
+            boom = np.sin(2 * np.pi * 48 * t) * np.exp(-7 * t) * 0.70
+            surge = np.sin(2 * np.pi * np.cumsum(np.linspace(350, 1600, len(t)) / sr)) * 0.45
+            sparkle = (0.22 * np.sin(2 * np.pi * 3400 * t)
+                       + 0.18 * np.sin(2 * np.pi * 4200 * t)) * np.exp(-14 * t)
+            wave = (boom + surge + sparkle) * env * 0.50
+
+        elif s == "OBSIDIAN":
+            # Heavy bass slam + dark-crystal crack
+            dur = 0.32
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-4.0 * t / dur) * (1 - np.exp(-65 * t))
+            slam = np.sin(2 * np.pi * 62 * t) * np.exp(-10 * t) * 0.80
+            cut = np.sign(np.sin(2 * np.pi * 220 * t)) * np.exp(-20 * t) * 0.35
+            dark_ring = (np.sin(2 * np.pi * 1400 * t)
+                         + 0.40 * np.sin(2 * np.pi * 2100 * t)) * np.exp(-16 * t) * 0.42
+            wave = (slam + cut + dark_ring) * env * 0.50
+
+        elif s == "AURORA":
+            # Ethereal harmonic swell — layered sine wash
+            dur = 0.45
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.8 * t / dur) * (1 - np.exp(-20 * t))
+            layer1 = np.sin(2 * np.pi * 528 * t)
+            layer2 = 0.70 * np.sin(2 * np.pi * 660 * t + 0.6)
+            layer3 = 0.50 * np.sin(2 * np.pi * 792 * t + 1.2)
+            shimmer = 0.18 * np.sin(2 * np.pi * 2640 * t) * np.exp(-8 * t)
+            wave = (layer1 + layer2 + layer3 + shimmer) * env * 0.40
+
+        elif s == "NOVA":
+            # Orbital spin-up + explosive flash
+            dur = 0.33
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.8 * t / dur) * (1 - np.exp(-55 * t))
+            spin_freq = np.linspace(280, 1400, len(t)) + 80 * np.sin(2 * np.pi * 18 * t)
+            spin = np.sin(2 * np.pi * np.cumsum(spin_freq / sr)) * 0.60
+            flash_noise = (np.random.rand(len(t)) * 2 - 1) * np.exp(-30 * t) * 0.45
+            high = 0.28 * np.sin(2 * np.pi * 3600 * t) * np.exp(-18 * t)
+            wave = (spin + flash_noise + high) * env * 0.50
+
+        elif s == "RIFT":
+            # Dimensional tear — warped FM bass + spatial dissonance
+            dur = 0.38
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.2 * t / dur) * (1 - np.exp(-38 * t))
+            mod = np.sin(2 * np.pi * 7 * t) * 280
+            tear = np.sin(2 * np.pi * np.cumsum((95 + mod) / sr)) * 0.60
+            dissonant = 0.42 * np.sin(2 * np.pi * np.cumsum(np.linspace(1800, 90, len(t)) / sr))
+            noise_burst = (np.random.rand(len(t)) * 2 - 1) * np.exp(-22 * t) * 0.28
+            wave = (tear + dissonant + noise_burst) * env * 0.50
+
+        elif s == "THORN":
+            # Vine whip crack + organic low surge
+            dur = 0.30
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-4.2 * t / dur) * (1 - np.exp(-60 * t))
+            whip = (np.random.rand(len(t)) * 2 - 1) * np.exp(-32 * t) * 0.65
+            surge = np.sin(2 * np.pi * np.cumsum(np.linspace(140, 680, len(t)) / sr)) * 0.55
+            harmonic = 0.28 * np.sin(2 * np.pi * 680 * t) * np.exp(-12 * t)
+            wave = (whip + surge + harmonic) * env * 0.50
+
+        elif s == "SENTINEL":
+            # Mechanical rotation lock + barrier surge hum
+            dur = 0.36
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.5 * t / dur) * (1 - np.exp(-45 * t))
+            rotor = np.sin(2 * np.pi * (440 + 120 * np.sin(2 * np.pi * 14 * t)) * t) * 0.55
+            hum = 0.40 * np.sin(2 * np.pi * 220 * t + np.sin(2 * np.pi * 28 * t) * 1.5)
+            lock_click = np.sin(2 * np.pi * 1600 * t) * np.exp(-60 * t) * 0.40
+            wave = (rotor + hum + lock_click) * env * 0.48
+
+        else:  # HELL
+            # Infernal surge — roaring fire wall + demonic bass crack
+            dur = 0.40
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.8 * t / dur) * (1 - np.exp(-40 * t))
+            roar_noise = (np.random.rand(len(t)) * 2 - 1) * 0.70
+            infernal = np.sin(2 * np.pi * np.cumsum(np.linspace(120, 680, len(t)) / sr)) * 0.60
+            bass_crack = np.sign(np.sin(2 * np.pi * 55 * t)) * np.exp(-8 * t) * 0.40
+            sear = 0.25 * np.sin(2 * np.pi * 2800 * t) * np.exp(-20 * t)
+            wave = (roar_noise * 0.38 + infernal + bass_crack + sear) * env * 0.52
+
+        arr = np.asarray(np.clip(wave, -1.0, 1.0) * 32767, dtype=np.int16)
+        offset = max(1, int(sr * 0.005))
+        right = np.concatenate([np.zeros(offset, dtype=np.int16), arr[:-offset]])
+        return pygame.sndarray.make_sound(np.column_stack([arr, right]))
+
+    def _boss_death_sound(self, short: str) -> "pygame.mixer.Sound":
+        """Unique collapse/defeat sound for each boss."""
+        sr = 44100
+        s = short.upper()
+
+        if s == "AEGIS":
+            # Shield shattering — metallic fragments + resonance fade
+            dur = 0.48
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.0 * t / dur)
+            shatter = (np.random.rand(len(t)) * 2 - 1) * np.exp(-26 * t) * 0.60
+            ring_down = np.sin(2 * np.pi * np.cumsum(np.linspace(1200, 320, len(t)) / sr))
+            sub = np.sin(2 * np.pi * 80 * t) * np.exp(-9 * t) * 0.45
+            wave = (shatter + ring_down * 0.50 + sub) * env * 0.52
+
+        elif s == "TEMPEST":
+            # Storm dispersing — thunder roll + wind scatter
+            dur = 0.55
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.5 * t / dur)
+            thunder = (np.random.rand(len(t)) * 2 - 1) * np.exp(-3.0 * t) * 0.65
+            roll = np.sin(2 * np.pi * 68 * t + np.sin(2 * np.pi * 3 * t) * 5) * np.exp(-5 * t) * 0.42
+            scatter = np.sin(2 * np.pi * np.cumsum(np.linspace(900, 60, len(t)) / sr)) * 0.38
+            wave = (thunder + roll + scatter) * env * 0.50
+
+        elif s == "VOID":
+            # Dimensional implosion — bass vortex + reality collapse
+            dur = 0.52
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.8 * t / dur)
+            # Rapid inward frequency collapse
+            implosion_freq = np.linspace(680, 28, len(t)) + np.sin(2 * np.pi * 9 * t) * 180
+            imp = np.sin(2 * np.pi * np.cumsum(implosion_freq / sr)) * 0.65
+            dark_rumble = np.sign(np.sin(2 * np.pi * 38 * t)) * 0.30 * np.exp(-4 * t)
+            collapse = (np.random.rand(len(t)) * 2 - 1) * np.exp(-12 * t) * 0.25
+            wave = (imp + dark_rumble + collapse) * env * 0.52
+
+        elif s == "CHRONO":
+            # Time expiring — clock wind-down + mechanical burst
+            dur = 0.50
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.6 * t / dur)
+            # Descending chime cascade
+            c1 = np.sin(2 * np.pi * 1568 * t) * np.exp(-10 * t) * 0.60
+            c2 = np.sin(2 * np.pi * 1318 * t) * np.exp(-10 * np.maximum(t - 0.08, 0)) * (t >= 0.08) * 0.55
+            c3 = np.sin(2 * np.pi * 1046 * t) * np.exp(-10 * np.maximum(t - 0.17, 0)) * (t >= 0.17) * 0.50
+            wind_down = np.sin(2 * np.pi * np.cumsum(np.linspace(800, 55, len(t)) / sr)) * 0.38
+            gear_burst = (np.random.rand(len(t)) * 2 - 1) * np.exp(-30 * t) * 0.32
+            wave = (c1 + c2 + c3 + wind_down + gear_burst) * env * 0.42
+
+        elif s == "PRISM":
+            # Crystal explosion — high harmonic burst + light scatter noise
+            dur = 0.44
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.5 * t / dur)
+            explosion = (np.sin(2 * np.pi * 2200 * t)
+                         + 0.70 * np.sin(2 * np.pi * 3300 * t)
+                         + 0.50 * np.sin(2 * np.pi * 4400 * t)) * np.exp(-8 * t)
+            scatter = (np.random.rand(len(t)) * 2 - 1) * np.exp(-14 * t) * 0.40
+            low_crack = np.sin(2 * np.pi * 180 * t) * np.exp(-12 * t) * 0.35
+            wave = (explosion * 0.52 + scatter + low_crack) * env * 0.46
+
+        elif s == "BLOOM":
+            # Organic collapse — seed burst + vine unravel
+            dur = 0.50
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.8 * t / dur)
+            burst_noise = (np.random.rand(len(t)) * 2 - 1) * np.exp(-10 * t) * 0.55
+            unravel = np.sin(2 * np.pi * np.cumsum(np.linspace(380, 95, len(t)) / sr)) * 0.48
+            low_thud = np.sin(2 * np.pi * 72 * t) * np.exp(-9 * t) * 0.40
+            wave = (burst_noise + unravel + low_thud) * env * 0.50
+
+        elif s == "EMBER":
+            # Inferno collapse — explosion + dying flame fade
+            dur = 0.52
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.4 * t / dur)
+            explosion_thud = np.sin(2 * np.pi * 58 * t) * np.exp(-8 * t) * 0.75
+            fire_noise = (np.random.rand(len(t)) * 2 - 1) * np.exp(-4 * t) * 0.55
+            sizzle = np.sign(np.sin(2 * np.pi * 120 * t)) * np.exp(-6 * t) * 0.25
+            ember_ring = np.sin(2 * np.pi * np.cumsum(np.linspace(600, 80, len(t)) / sr)) * 0.30
+            wave = (explosion_thud + fire_noise * 0.40 + sizzle + ember_ring) * env * 0.52
+
+        elif s == "TIDE":
+            # Wave crash — massive ocean impact + receding surge
+            dur = 0.58
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.2 * t / dur)
+            crash = (np.random.rand(len(t)) * 2 - 1) * np.exp(-6 * t) * 0.65
+            deep = np.sin(2 * np.pi * 42 * t + np.sin(2 * np.pi * 0.6 * t) * 3) * np.exp(-4 * t) * 0.55
+            recede = np.sin(2 * np.pi * np.cumsum(np.linspace(300, 45, len(t)) / sr)) * 0.38
+            wave = (crash + deep + recede) * env * 0.50
+
+        elif s == "FROST":
+            # Ice shattering — high-frequency shatter + sub freeze crack
+            dur = 0.46
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.2 * t / dur)
+            shatter_high = (np.random.rand(len(t)) * 2 - 1) * np.exp(-18 * t) * 0.60
+            crack_tone = (np.sin(2 * np.pi * 2800 * t)
+                          + 0.50 * np.sin(2 * np.pi * 4200 * t)) * np.exp(-12 * t) * 0.50
+            ice_sub = np.sin(2 * np.pi * 95 * t) * np.exp(-11 * t) * 0.45
+            wave = (shatter_high + crack_tone + ice_sub) * env * 0.48
+
+        elif s == "STELLAR":
+            # Supernova — deep space detonation + fading star shimmer
+            dur = 0.55
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.5 * t / dur)
+            detonation = np.sin(2 * np.pi * 44 * t) * np.exp(-7 * t) * 0.80
+            nova_noise = (np.random.rand(len(t)) * 2 - 1) * np.exp(-5 * t) * 0.50
+            star_ring = (np.sin(2 * np.pi * 1800 * t)
+                         + 0.40 * np.sin(2 * np.pi * 2700 * t)) * np.exp(-10 * t) * 0.35
+            wave = (detonation + nova_noise * 0.38 + star_ring) * env * 0.52
+
+        elif s == "OBSIDIAN":
+            # Dark crystal shatter — bass collapse + shard scatter
+            dur = 0.48
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.0 * t / dur)
+            bass_collapse = np.sin(2 * np.pi * 52 * t) * np.exp(-8 * t) * 0.75
+            shard = (np.random.rand(len(t)) * 2 - 1) * np.exp(-20 * t) * 0.52
+            dark_ring = np.sin(2 * np.pi * np.cumsum(np.linspace(1600, 180, len(t)) / sr)) * 0.38
+            cut = np.sign(np.sin(2 * np.pi * 280 * t)) * np.exp(-14 * t) * 0.22
+            wave = (bass_collapse + shard + dark_ring + cut) * env * 0.50
+
+        elif s == "AURORA":
+            # Light burst — harmonic resonance bloom + ethereal dissipation
+            dur = 0.55
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.6 * t / dur)
+            bloom_burst = (np.sin(2 * np.pi * 660 * t)
+                           + 0.75 * np.sin(2 * np.pi * 880 * t)
+                           + 0.55 * np.sin(2 * np.pi * 1320 * t)) * np.exp(-5 * t)
+            light_scatter = (np.random.rand(len(t)) * 2 - 1) * np.exp(-16 * t) * 0.22
+            dissolve = 0.35 * np.sin(2 * np.pi * np.cumsum(np.linspace(2400, 220, len(t)) / sr))
+            wave = (bloom_burst * 0.50 + light_scatter + dissolve) * env * 0.44
+
+        elif s == "NOVA":
+            # Nova detonation — orbiting burst + radial explosion
+            dur = 0.50
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.7 * t / dur)
+            sub_punch = np.sin(2 * np.pi * 62 * t) * np.exp(-9 * t) * 0.72
+            radial_noise = (np.random.rand(len(t)) * 2 - 1) * np.exp(-7 * t) * 0.50
+            orbit_ring = (np.sin(2 * np.pi * 1400 * t)
+                          + 0.50 * np.sin(2 * np.pi * 2100 * t)) * np.exp(-11 * t) * 0.40
+            wave = (sub_punch + radial_noise * 0.40 + orbit_ring) * env * 0.52
+
+        elif s == "RIFT":
+            # Rift collapse — dimensional implosion + spatial dissonance burst
+            dur = 0.52
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.8 * t / dur)
+            rift_mod = np.sin(2 * np.pi * 11 * t) * 350
+            implosion = np.sin(2 * np.pi * np.cumsum((110 + rift_mod) / sr)) * 0.60
+            dissonant_burst = (np.sin(2 * np.pi * 2400 * t)
+                                - 0.65 * np.sin(2 * np.pi * 2318 * t)) * np.exp(-12 * t) * 0.40
+            void_rumble = (np.random.rand(len(t)) * 2 - 1) * np.exp(-8 * t) * 0.35
+            wave = (implosion + dissonant_burst + void_rumble) * env * 0.50
+
+        elif s == "THORN":
+            # Vine collapse — organic crack scatter + low thud
+            dur = 0.48
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-3.0 * t / dur)
+            crack_scatter = (np.random.rand(len(t)) * 2 - 1) * np.exp(-12 * t) * 0.58
+            organic_thud = np.sin(2 * np.pi * 88 * t) * np.exp(-10 * t) * 0.55
+            snap = np.sin(2 * np.pi * np.cumsum(np.linspace(500, 70, len(t)) / sr)) * 0.38
+            wave = (crack_scatter + organic_thud + snap) * env * 0.50
+
+        elif s == "SENTINEL":
+            # Shield burst — mechanical crash + barrier implosion
+            dur = 0.50
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.8 * t / dur)
+            mech_crash = (np.random.rand(len(t)) * 2 - 1) * np.exp(-15 * t) * 0.55
+            barrier_imp = (np.sin(2 * np.pi * 880 * t)
+                           + 0.55 * np.sin(2 * np.pi * 1320 * t)) * np.exp(-9 * t) * 0.48
+            rotor_fade = np.sin(2 * np.pi * np.cumsum(np.linspace(440, 55, len(t)) / sr)) * 0.35
+            low_thud = np.sin(2 * np.pi * 72 * t) * np.exp(-11 * t) * 0.50
+            wave = (mech_crash + barrier_imp + rotor_fade + low_thud) * env * 0.48
+
+        else:  # HELL
+            # Hellfire collapse — infernal explosion + demonic wail descending
+            dur = 0.60
+            t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+            env = np.exp(-2.0 * t / dur)
+            hell_thud = np.sin(2 * np.pi * 40 * t) * np.exp(-6 * t) * 0.85
+            infernal_noise = (np.random.rand(len(t)) * 2 - 1) * np.exp(-3.5 * t) * 0.65
+            wail = np.sin(2 * np.pi * np.cumsum(np.linspace(860, 55, len(t)) / sr)) * 0.50
+            sear = np.sign(np.sin(2 * np.pi * 75 * t)) * np.exp(-5 * t) * 0.28
+            wave = (hell_thud + infernal_noise * 0.42 + wail + sear) * env * 0.54
+
+        arr = np.asarray(np.clip(wave, -1.0, 1.0) * 32767, dtype=np.int16)
+        # Wider stereo spread for the big defeat moment
+        offset = max(1, int(sr * 0.008))
+        right = np.concatenate([np.zeros(offset, dtype=np.int16), arr[:-offset]])
+        return pygame.sndarray.make_sound(np.column_stack([arr, right]))
+
+    # ── Unique item pickup sounds ────────────────────────────────────────────
+
+    def _item_shield_sound(self):
+        """Crystalline barrier snap — rising shimmer + metallic ring."""
+        sr = 44100
+        dur = 0.22
+        n = int(sr * dur)
+        t = np.linspace(0, dur, n, endpoint=False)
+        # Rising frequency sweep — shield locking into place
+        freq_rise = np.linspace(520, 1480, n)
+        phase_acc = np.cumsum(freq_rise / sr)
+        sweep = np.sin(2 * np.pi * phase_acc)
+        # Metallic shimmer layer
+        shimmer = 0.28 * np.sin(2 * np.pi * 3200 * t) * np.exp(-18.0 * t)
+        # Soft click at attack
+        click = 0.18 * np.sin(2 * np.pi * 900 * t) * np.exp(-80.0 * t)
+        env = np.exp(-5.5 * t / dur) * (1 - np.exp(-120 * t))
+        wave = (sweep * 0.55 + shimmer + click) * env * 0.48
+        arr = np.asarray(np.clip(wave, -1.0, 1.0) * 32767, dtype=np.int16)
+        # Slight stereo spread for a wider "dome" feel
+        offset = int(sr * 0.004)
+        right = np.concatenate([np.zeros(offset, dtype=np.int16), arr[:-offset]])
+        return pygame.sndarray.make_sound(np.column_stack([arr, right]))
+
+    def _item_coin_sound(self):
+        """Bright golden ping — classic coin chime with quick decay."""
+        sr = 44100
+        dur = 0.18
+        n = int(sr * dur)
+        t = np.linspace(0, dur, n, endpoint=False)
+        env = np.exp(-9.0 * t / dur)
+        # Fundamental bright ping
+        ping = np.sin(2 * np.pi * 1640 * t)
+        # Descending overtone gives the "coin bounce" feel
+        overtone = 0.40 * np.sin(2 * np.pi * 2460 * t) * np.exp(-14.0 * t / dur)
+        # Tiny sub-bell body
+        body = 0.22 * np.sin(2 * np.pi * 820 * t)
+        wave = (ping + overtone + body) * env * 0.50
+        arr = np.asarray(np.clip(wave, -1.0, 1.0) * 32767, dtype=np.int16)
+        return pygame.sndarray.make_sound(np.column_stack([arr, arr]))
+
+    def _item_magnet_sound(self):
+        """Electromagnetic whoosh — vibrato buzz that locks in with a snap."""
+        sr = 44100
+        dur = 0.26
+        n = int(sr * dur)
+        t = np.linspace(0, dur, n, endpoint=False)
+        # Vibrato oscillation — field pulling things in
+        vibrato = np.sin(2 * np.pi * 22 * t) * 3.5
+        base_freq = 340 + vibrato * 60
+        phase_acc = np.cumsum(base_freq / sr)
+        tone = np.sin(2 * np.pi * phase_acc)
+        # Harmonic buzz reinforces the magnetic quality
+        buzz = 0.35 * np.sign(np.sin(2 * np.pi * 170 * t)) * np.exp(-4.0 * t / dur)
+        # Final snap transient
+        snap = 0.30 * np.sin(2 * np.pi * 800 * t) * np.exp(-90.0 * t)
+        env = np.exp(-3.2 * t / dur) * (1 - np.exp(-60 * t))
+        wave = (tone * 0.52 + buzz + snap) * env * 1.18
+        arr = np.asarray(np.clip(wave, -1.0, 1.0) * 32767, dtype=np.int16)
+        # Out-of-phase stereo mimics a rotating field
+        offset = int(sr * 0.006)
+        right = np.concatenate([np.zeros(offset, dtype=np.int16), arr[:-offset]])
+        return pygame.sndarray.make_sound(np.column_stack([arr, right]))
+
+    def _item_multiplier_sound(self):
+        """Sparkling upward arpeggio — magical bonus feel with stardust shimmer."""
+        sr = 44100
+        dur = 0.30
+        n = int(sr * dur)
+        t = np.linspace(0, dur, n, endpoint=False)
+        # Fast ascending frequency sweep — excitement building
+        freq_sweep = np.linspace(620, 1860, n)
+        phase_acc = np.cumsum(freq_sweep / sr)
+        sweep = np.sin(2 * np.pi * phase_acc)
+        # High sparkle layer
+        sparkle = 0.38 * np.sin(2 * np.pi * 3600 * t) * np.exp(-22.0 * t / dur)
+        # Second harmonic reinforces "magical" quality
+        harmonic = 0.30 * np.sin(2 * np.pi * 3720 * t) * np.exp(-18.0 * t / dur)
+        # Gentle noise shimmer (stardust)
+        shimmer_noise = (np.random.rand(n) * 2 - 1) * 0.06 * np.exp(-10.0 * t / dur)
+        env = np.exp(-4.5 * t / dur) * (1 - np.exp(-80 * t))
+        wave = (sweep * 0.48 + sparkle + harmonic + shimmer_noise) * env * 0.46
+        arr = np.asarray(np.clip(wave, -1.0, 1.0) * 32767, dtype=np.int16)
+        # Wide stereo for a showier effect
+        offset = int(sr * 0.007)
+        right = np.concatenate([np.zeros(offset, dtype=np.int16), arr[:-offset]])
+        return pygame.sndarray.make_sound(np.column_stack([arr, right]))
+
+    def _item_core_sound(self):
+        """Deep impact thud + energy crack — boss core strike landing hard."""
+        sr = 44100
+        dur = 0.28
+        n = int(sr * dur)
+        t = np.linspace(0, dur, n, endpoint=False)
+        # Heavy sub-bass thud — weight of the hit
+        thud_env = np.exp(-9.0 * t)
+        thud = np.sin(2 * np.pi * 55 * t) * 0.80 * thud_env
+        # Mid-range punch transient
+        punch_env = np.exp(-14.0 * t)
+        punch = np.sin(2 * np.pi * 220 * t) * 0.55 * punch_env
+        # High-energy crack — the core shattering
+        crack_env = np.exp(-28.0 * t)
+        crack = (np.random.rand(n) * 2 - 1) * 0.60 * crack_env
+        # Descending metallic ring — residual energy
+        freq_down = np.linspace(900, 180, n)
+        phase_down = np.cumsum(freq_down / sr)
+        ring = 0.28 * np.sin(2 * np.pi * phase_down) * np.exp(-6.0 * t / dur)
+        wave = np.clip((thud + punch + crack + ring) * 0.55, -1.0, 1.0)
+        arr = np.asarray(wave * 32767, dtype=np.int16)
+        # Slight offset for stereo impact punch
+        offset = int(sr * 0.003)
+        right = np.concatenate([np.zeros(offset, dtype=np.int16), arr[:-offset]])
+        return pygame.sndarray.make_sound(np.column_stack([arr, right]))
+
     def play(self, name):
         if self.enabled and name in self.sounds:
             try:
@@ -942,61 +1714,53 @@ def boss_item_table(difficulty_name: str, phase: int):
     phase = 1 if phase <= 1 else 2 if phase == 2 else 3
 
     drop_rates = {
-        "EASY": (0.58, 0.52, 0.46),
-        "NORMAL": (0.52, 0.46, 0.40),
-        "HARD": (0.46, 0.40, 0.34),
-        "INSANE": (0.36, 0.30, 0.24),
+        "EASY": (0.54, 0.48, 0.42),
+        "NORMAL": (0.48, 0.42, 0.36),
+        "HARD": (0.42, 0.36, 0.30),
+        "INSANE": (0.32, 0.27, 0.22),
     }
     core_chances = {
-        "EASY": (0.34, 0.43, 0.51),
-        "NORMAL": (0.31, 0.40, 0.48),
-        "HARD": (0.28, 0.36, 0.44),
-        "INSANE": (0.22, 0.29, 0.35),
+        "EASY": (0.33, 0.41, 0.49),
+        "NORMAL": (0.30, 0.38, 0.46),
+        "HARD": (0.27, 0.35, 0.43),
+        "INSANE": (0.21, 0.28, 0.34),
     }
     duo_chances = {
-        "EASY": (0.10, 0.16, 0.20),
-        "NORMAL": (0.08, 0.13, 0.17),
-        "HARD": (0.06, 0.10, 0.13),
-        "INSANE": (0.03, 0.05, 0.08),
+        "EASY": (0.09, 0.14, 0.18),
+        "NORMAL": (0.07, 0.11, 0.15),
+        "HARD": (0.05, 0.09, 0.12),
+        "INSANE": (0.03, 0.04, 0.06),
     }
     trio_chances = {
-        "EASY": (0.00, 0.03, 0.05),
+        "EASY": (0.00, 0.02, 0.04),
         "NORMAL": (0.00, 0.02, 0.03),
         "HARD": (0.00, 0.01, 0.02),
         "INSANE": (0.00, 0.00, 0.01),
     }
     support_tables = {
         "EASY": [
-            ("coin", 0.19),
-            ("magnet", 0.18),
-            ("boost", 0.18),
-            ("shield", 0.15),
-            ("revive", 0.15),
-            ("multiplier", 0.15),
+            ("coin", 0.30),
+            ("magnet", 0.26),
+            ("shield", 0.18),
+            ("multiplier", 0.26),
         ],
         "NORMAL": [
-            ("coin", 0.20),
-            ("magnet", 0.18),
-            ("boost", 0.18),
-            ("shield", 0.14),
-            ("revive", 0.14),
-            ("multiplier", 0.16),
+            ("coin", 0.31),
+            ("magnet", 0.26),
+            ("shield", 0.17),
+            ("multiplier", 0.26),
         ],
         "HARD": [
-            ("coin", 0.21),
-            ("magnet", 0.18),
-            ("boost", 0.18),
-            ("shield", 0.13),
-            ("revive", 0.13),
-            ("multiplier", 0.17),
+            ("coin", 0.32),
+            ("magnet", 0.25),
+            ("shield", 0.17),
+            ("multiplier", 0.26),
         ],
         "INSANE": [
-            ("coin", 0.22),
-            ("magnet", 0.18),
-            ("boost", 0.18),
-            ("shield", 0.12),
-            ("revive", 0.12),
-            ("multiplier", 0.18),
+            ("coin", 0.33),
+            ("magnet", 0.25),
+            ("shield", 0.16),
+            ("multiplier", 0.26),
         ],
     }
     name = difficulty_name if difficulty_name in drop_rates else "NORMAL"
@@ -1006,7 +1770,7 @@ def boss_item_table(difficulty_name: str, phase: int):
         "core_chance": core_chances[name][idx],
         "duo_chance": duo_chances[name][idx],
         "trio_chance": trio_chances[name][idx],
-        "support_table": support_tables[name],
+        "support_table": list(support_tables[name]),
     }
 
 @dataclass(slots=True)
@@ -2793,7 +3557,7 @@ def draw_boss_body_surface(spec: dict, boss) -> tuple[pygame.Surface, pygame.Rec
     scale = 1.0 + 0.03 * max(0, boss.phase - 1) + (0.04 if boss.enraged else 0.0) + (0.04 if boss.phase_changed else 0.0)
     if is_hell:
         scale += 0.03 * max(0, boss.phase - 1)
-    img = pygame.transform.rotozoom(body, rot, scale)
+    img = get_cached_rotated_surface(body, rot, key=("boss_visual", boss.boss_id, boss.phase, boss.enraged, boss.phase_changed, is_hell, body.get_size()), scale=scale, angle_step=1.0)
     rect = img.get_rect(center=boss_visual_center(boss))
     return img, rect
 
@@ -2848,7 +3612,7 @@ def draw_boss_hitbox_surface(spec: dict, boss) -> tuple[pygame.Surface, pygame.R
     else:  # aurora
         ellipse((164, 82, 124, 96))
 
-    img = pygame.transform.rotozoom(hitbox, boss_visual_rotation(boss), 1.0)
+    img = get_cached_rotated_surface(hitbox, boss_visual_rotation(boss), key=("boss_hitbox_img", spec.get("short", spec.get("art", "aegis")), boss.phase, boss.enraged, boss.phase_changed), scale=1.0, angle_step=1.0)
     rect = img.get_rect(center=boss_visual_center(boss))
     return img, rect
 
@@ -2883,8 +3647,11 @@ class Particle:
             return
         alpha = clamp(self.life / 0.7, 0.0, 1.0)
         radius = max(1, int(self.size * (0.6 + 0.8 * alpha)))
+        rect = pygame.Rect(int(self.x - radius * 2), int(self.y - radius * 2), radius * 4, radius * 4)
+        if not rect_intersects_view(rect, 24):
+            return
         overlay = get_particle_surface(radius, self.color, int(255 * alpha))
-        surf.blit(overlay, (self.x - radius * 2, self.y - radius * 2))
+        surf.blit(overlay, rect.topleft)
 
 @dataclass(slots=True)
 class FloatingText:
@@ -2903,9 +3670,11 @@ class FloatingText:
         if self.life <= 0:
             return
         alpha = clamp(self.life / 1.0, 0.0, 1.0)
-        img = render_text_cached(font, self.text, self.color).copy()
-        img.set_alpha(int(255 * alpha))
-        surf.blit(img, img.get_rect(center=(self.x, self.y)))
+        rect = render_text_cached(font, self.text, self.color).get_rect(center=(self.x, self.y))
+        if not rect_intersects_view(rect, 24):
+            return
+        img = get_text_alpha_surface(font, self.text, self.color, int(255 * alpha))
+        surf.blit(img, rect)
 
 @dataclass(slots=True)
 class Bird:
@@ -2917,7 +3686,6 @@ class Bird:
     invuln: float = 0.0
     shield: float = 0.0
     boost: float = 0.0
-    revives: int = 0
     wing_phase: float = 0.0
 
     def skin(self) -> Skin:
@@ -2963,7 +3731,7 @@ class Bird:
         ]
         pygame.draw.polygon(body, skin.bird_alt, wing_pts)
 
-        img = fast_rotate_surface(body, angle)
+        img = get_cached_rotated_surface(body, angle, key=("bird_rot", skin.name, r), angle_step=1.5)
         rect = img.get_rect(center=(self.x, self.y))
         surf.blit(img, rect)
 
@@ -3068,6 +3836,8 @@ class Pipe:
         return pygame.Rect(int(self.x), int(self.gap_y - self.gap_size * 0.5), self.width, self.gap_size)
 
     def draw(self, surf: pygame.Surface, theme: dict, pulse: float = 0.0, boss_spec: Optional[dict] = None, boss_phase: int = 1, boss_timer: float = 0.0):
+        if self.x > WIDTH + 120 or self.x + self.width < -120:
+            return
         top_rect, bot_rect = self.colliders()
         top_color = theme["pipe"]
         dark = theme["pipe_dark"]
@@ -3213,13 +3983,6 @@ class Pipe:
         draw_pipe_part(top_rect, False)
         draw_pipe_part(bot_rect, True)
 
-        if self.variant > 0:
-            # Small glow at the gap. Direct drawing is cheaper than creating a
-            # separate alpha surface every frame.
-            gap_top = int(self.gap_y - self.gap_size * 0.5) + 12
-            gap_h = max(12, self.gap_size - 24)
-            pygame.draw.rect(surf, glow_color, (self.x - 5, gap_top, self.width + 10, gap_h), border_radius=18)
-
 @dataclass(slots=True)
 class Orb:
     x: float
@@ -3240,29 +4003,20 @@ class Orb:
         if not self.active:
             return
 
-        pulse = 0.5 + 0.5 * math.sin(self.phase * 2.0)
         bob = math.sin(self.phase * 2.4) * 4.0
         sway = math.cos(self.phase * 1.7) * 3.0
         rot = self.phase * 90.0
         x = self.x + sway * 0.4
         y = self.y + bob
+        rect = pygame.Rect(int(x - 28), int(y - 28), 56, 56)
+        if not rect_intersects_view(rect, 24):
+            return
 
-        color_map = {
-            "shield": (100, 230, 255),
-            "coin": (255, 220, 100),
-            "magnet": (255, 120, 120),
-            "boost": (160, 255, 180),
-            "multiplier": (255, 175, 255),
-            "revive": (255, 210, 120),
-            "core": (255, 150, 90),
-        }
-        color = color_map.get(self.kind, skin.accent)
-
+        color = ORB_COLOR_MAP.get(self.kind, skin.accent)
         phase_bucket = int((self.phase % math.tau) / math.tau * ORB_PHASE_BUCKETS)
         outer = get_orb_body_surface(self.kind, color, phase_bucket)
-        img = fast_rotate_surface(outer, rot)
-        rect = img.get_rect(center=(int(x), int(y)))
-        surf.blit(img, rect)
+        img = get_cached_rotated_surface(outer, rot, key=("orb_rot", self.kind, skin.name, phase_bucket, outer.get_size()), angle_step=3.0)
+        surf.blit(img, img.get_rect(center=(int(x), int(y))))
 
 @dataclass(slots=True)
 class BossProjectile:
@@ -3275,6 +4029,11 @@ class BossProjectile:
     boss_id: int = 0
     spin: float = 0.0
     age: float = 0.0
+    accent: Tuple[int, int, int] = WHITE
+    core: Tuple[int, int, int] = WHITE
+    dark: Tuple[int, int, int] = BLACK
+    body: Tuple[int, int, int] = WHITE
+    is_hell: bool = False
 
     def update(self, dt: float):
         self.x += self.vx * dt
@@ -3287,156 +4046,53 @@ class BossProjectile:
         return pygame.Rect(int(self.x - diameter / 2), int(self.y - diameter / 2), diameter, diameter)
 
     def draw(self, surf: pygame.Surface):
-        idx = self.boss_id % len(BOSS_SPECS)
-        spec = BOSS_SPECS[idx]
-        style = spec.get("projectile", spec.get("attack", "aegis"))
-        accent = spec["accent"]
-        core = spec["core"]
-        dark = spec["dark"]
-        body = spec["body"]
-        is_hell = spec.get("short") == "HELL"
+        draw_size = self.radius * 8 + 24
+        draw_rect = pygame.Rect(int(self.x - draw_size / 2), int(self.y - draw_size / 2), draw_size, draw_size)
+        if not rect_intersects_view(draw_rect, 100):
+            return
+        spin_bucket = int((self.spin % math.tau) / math.tau * ORB_PHASE_BUCKETS)
+        base = get_boss_projectile_body_surface(
+            self.boss_id,
+            self.radius,
+            spin_bucket,
+            self.kind,
+            self.accent,
+            self.core,
+            self.dark,
+            self.body,
+            self.is_hell,
+        )
+        size = base.get_width()
+        cx = cy = size // 2
+
+        # Keep the short-lived intro flash and directional trail on the same
+        # cached composition surface to avoid extra temporary allocations.
         age = float(getattr(self, "age", 0.0))
         intro = clamp(age / 0.24, 0.0, 1.0)
         intro_s = ease_out_cubic(intro)
-        pulse = 0.82 + 0.18 * math.sin(self.spin * 0.8 + age * 8.0)
-        size = self.radius * 8 + 24
-        glow = get_clear_surface((size, size), ("boss_projectile_glow", style, self.radius, idx))
-        cx = cy = size // 2
-        trail = get_clear_surface((size, size), ("boss_projectile_trail", style, self.radius, idx))
+
+        glow = get_clear_surface((size, size), ("boss_projectile_glow", self.kind, self.radius, self.boss_id, spin_bucket))
+        glow.blit(base, (0, 0))
         dirx = -1 if self.vx >= 0 else 1
         diry = -1 if self.vy >= 0 else 1
-        trail_len = int((1.0 - intro_s) * (18 + self.radius * 1.9))
+        trail_len = int((1.0 - intro_s) * (16 + self.radius * 1.6))
+        accent = self.accent
+        core = self.core
         if trail_len > 0:
             for i in range(4):
                 t = i / 3.0
-                px = cx + int(dirx * trail_len * (0.28 + t * 0.18))
-                py = cy + int(diry * trail_len * (0.10 + t * 0.06))
-                alpha = int(88 * (1.0 - t) * (1.0 - intro_s))
-                pygame.draw.line(trail, (*accent, alpha), (px, py), (px - dirx * (12 + i * 2), py + i - 1), 2)
-                pygame.draw.circle(trail, (*core, int(60 * (1.0 - t) * (1.0 - intro_s))), (px, py), max(1, 3 - i))
+                px = cx + int(dirx * trail_len * (0.30 + t * 0.16))
+                py = cy + int(diry * trail_len * (0.12 + t * 0.05))
+                alpha = int(82 * (1.0 - t) * (1.0 - intro_s))
+                pygame.draw.line(glow, (*accent, alpha), (px, py), (px - dirx * (10 + i * 2), py + i - 1), 2)
+                pygame.draw.circle(glow, (*core, int(58 * (1.0 - t) * (1.0 - intro_s))), (px, py), max(1, 3 - i))
         if intro_s < 1.0:
-            burst_r = int(self.radius * (2.9 - 1.5 * intro_s))
-            pygame.draw.circle(trail, (*accent, int(180 * (1.0 - intro_s))), (cx, cy), burst_r, 2)
-            pygame.draw.circle(trail, (*core, int(220 * (1.0 - intro_s))), (cx, cy), max(2, int(self.radius * (0.8 + 0.8 * intro_s))))
-            for i in range(6):
-                ang = self.spin * 0.9 + i * (math.tau / 6)
-                px = cx + int(math.cos(ang) * (burst_r + 8))
-                py = cy + int(math.sin(ang) * (burst_r + 8) * 0.72)
-                pygame.draw.circle(trail, (*accent, int(120 * (1.0 - intro_s))), (px, py), 2)
-        glow.blit(trail, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
-
-        if style == "aegis":
-            pygame.draw.circle(glow, (*accent, 52), (cx, cy), self.radius * 2)
-            pygame.draw.circle(glow, (*core, 220), (cx, cy), self.radius)
-            pygame.draw.circle(glow, (*body, 220), (cx, cy), self.radius + 3, 3)
-            pygame.draw.polygon(glow, (*accent, 230), [(cx, cy - 13), (cx + 10, cy), (cx, cy + 13), (cx - 10, cy)])
-            pygame.draw.line(glow, (*body, 220), (cx - 13, cy), (cx + 13, cy), 2)
-            pygame.draw.line(glow, (*body, 220), (cx, cy - 13), (cx, cy + 13), 2)
-        elif style == "tempest":
-            pygame.draw.circle(glow, (*accent, 62), (cx, cy), self.radius * 2)
-            pts = [(cx - 14, cy - 2), (cx - 1, cy - 16), (cx + 12, cy - 3), (cx + 4, cy + 4), (cx + 17, cy + 16), (cx - 7, cy + 7)]
-            pygame.draw.polygon(glow, (*body, 240), pts)
-            pygame.draw.polygon(glow, (*core, 220), [(cx - 6, cy - 8), (cx + 5, cy - 1), (cx + 1, cy + 7), (cx - 8, cy + 2)])
-            pygame.draw.arc(glow, (*accent, 220), (cx - self.radius * 2 + 4, cy - self.radius * 2 + 4, self.radius * 4 - 8, self.radius * 4 - 8), 0.3 + self.spin * 0.15, 4.1 + self.spin * 0.15, 3)
-        elif style == "void":
-            pygame.draw.circle(glow, (*accent, 48), (cx, cy), self.radius * 2)
-            pygame.draw.circle(glow, (*dark, 230), (cx, cy), self.radius + 6)
-            pygame.draw.circle(glow, (*core, 160), (cx + 6, cy - 2), max(2, self.radius // 2), 2)
-            pygame.draw.arc(glow, (*accent, 220), (cx - self.radius * 2 + 4, cy - self.radius * 2 + 4, self.radius * 4 - 8, self.radius * 4 - 8), 0.2 + self.spin * 0.18, 3.9 + self.spin * 0.18, 3)
-        elif style == "chrono":
-            pygame.draw.circle(glow, (*accent, 58), (cx, cy), self.radius * 2)
-            pygame.draw.circle(glow, (*body, 230), (cx, cy), self.radius + 1)
-            pygame.draw.circle(glow, (*core, 220), (cx, cy), max(3, self.radius // 2))
-            for a in range(8):
-                ang = self.spin * 0.35 + a * (math.tau / 8)
-                px = cx + int(math.cos(ang) * (self.radius + 7))
-                py = cy + int(math.sin(ang) * (self.radius + 7))
-                pygame.draw.line(glow, (*accent, 220), (cx, cy), (px, py), 2)
-        elif style == "prism":
-            pygame.draw.circle(glow, (*accent, 55), (cx, cy), self.radius * 2)
-            pygame.draw.polygon(glow, (*body, 230), [(cx, cy - 18), (cx + 14, cy - 2), (cx + 6, cy + 14), (cx - 8, cy + 6), (cx - 14, cy - 5)])
-            pygame.draw.polygon(glow, (*core, 240), [(cx, cy - 10), (cx + 9, cy), (cx + 4, cy + 8), (cx - 6, cy + 3), (cx - 9, cy - 3)])
-            pygame.draw.arc(glow, (*accent, 220), (cx - self.radius * 2 + 5, cy - self.radius * 2 + 5, self.radius * 4 - 10, self.radius * 4 - 10), 0.8, 5.4, 2)
-        elif style == "bloom":
-            pygame.draw.circle(glow, (*accent, 50), (cx, cy), self.radius * 2)
-            for ang in (0, math.pi * 0.5, math.pi, math.pi * 1.5):
-                px = cx + int(math.cos(ang) * (self.radius + 8))
-                py = cy + int(math.sin(ang) * (self.radius + 8))
-                pygame.draw.ellipse(glow, (*body, 230), (px - 7, py - 12, 14, 24))
-            pygame.draw.circle(glow, (*core, 230), (cx, cy), max(3, self.radius // 2))
-        elif style == "ember":
-            pygame.draw.circle(glow, (*accent, 60), (cx, cy), self.radius * 2)
-            if is_hell:
-                pts = [
-                    (cx - 6, cy - 18), (cx + 6, cy - 14), (cx + 16, cy - 2),
-                    (cx + 10, cy + 8), (cx + 18, cy + 18), (cx + 2, cy + 12),
-                    (cx - 8, cy + 20), (cx - 16, cy + 4),
-                ]
-                pygame.draw.polygon(glow, (*body, 240), pts)
-                pygame.draw.polygon(glow, (*dark, 180), [(cx - 1, cy - 10), (cx + 8, cy - 2), (cx + 2, cy + 7), (cx - 7, cy + 1)])
-                for a in range(6):
-                    ang = self.spin * 0.55 + a * (math.tau / 6)
-                    px = cx + int(math.cos(ang) * (self.radius + 6))
-                    py = cy + int(math.sin(ang) * (self.radius + 6) * 0.74)
-                    pygame.draw.line(glow, (*accent, 120), (cx, cy), (px, py), 1)
-            else:
-                pygame.draw.polygon(glow, (*body, 240), [(cx - 3, cy - 16), (cx + 10, cy - 1), (cx + 1, cy + 7), (cx + 14, cy + 18), (cx - 8, cy + 8), (cx - 1, cy - 1)])
-            pygame.draw.circle(glow, (*core, 230), (cx, cy), max(3, self.radius // 2))
-        elif style == "tide":
-            pygame.draw.circle(glow, (*accent, 58), (cx, cy), self.radius * 2)
-            pygame.draw.arc(glow, (*body, 230), (cx - self.radius * 2 + 4, cy - self.radius * 2 + 8, self.radius * 4 - 8, self.radius * 4 - 10), 0.2, 3.0, 4)
-            pygame.draw.arc(glow, (*core, 220), (cx - self.radius * 2 + 10, cy - self.radius * 2 + 14, self.radius * 4 - 20, self.radius * 4 - 22), 0.5, 2.6, 2)
-            pygame.draw.circle(glow, (*core, 230), (cx, cy + 1), max(3, self.radius // 2))
-        elif style == "frost":
-            pygame.draw.circle(glow, (*accent, 48), (cx, cy), self.radius * 2)
-            pygame.draw.polygon(glow, (*body, 235), [(cx, cy - 18), (cx + 12, cy - 2), (cx + 4, cy + 16), (cx - 8, cy + 4)])
-            pygame.draw.polygon(glow, (*core, 240), [(cx, cy - 10), (cx + 7, cy), (cx + 3, cy + 7), (cx - 4, cy + 2)])
-            pygame.draw.line(glow, (*accent, 220), (cx - 14, cy + 10), (cx + 14, cy - 10), 2)
-        elif style == "stellar":
-            pygame.draw.circle(glow, (*accent, 52), (cx, cy), self.radius * 2)
-            pygame.draw.polygon(glow, (*body, 230), [(cx, cy - 16), (cx + 7, cy - 4), (cx + 18, cy), (cx + 7, cy + 4), (cx, cy + 16), (cx - 7, cy + 4), (cx - 18, cy), (cx - 7, cy - 4)])
-            pygame.draw.circle(glow, (*core, 220), (cx, cy), max(3, self.radius // 2))
-        elif style == "obsidian":
-            pygame.draw.circle(glow, (*accent, 44), (cx, cy), self.radius * 2)
-            pygame.draw.polygon(glow, (*dark, 230), [(cx - 2, cy - 16), (cx + 14, cy - 6), (cx + 7, cy + 12), (cx - 10, cy + 6), (cx - 14, cy - 2)])
-            pygame.draw.polygon(glow, (*core, 220), [(cx + 1, cy - 9), (cx + 8, cy - 2), (cx + 3, cy + 7), (cx - 4, cy + 2)])
-        elif style == "nova":
-            pygame.draw.circle(glow, (*accent, 50), (cx, cy), self.radius * 2)
-            for a in range(8):
-                ang = self.spin * 0.42 + a * (math.tau / 8)
-                px = cx + int(math.cos(ang) * (self.radius + 7))
-                py = cy + int(math.sin(ang) * (self.radius + 7))
-                pygame.draw.line(glow, (*core, 210), (cx, cy), (px, py), 2)
-            pygame.draw.circle(glow, (*core, 230), (cx, cy), max(3, self.radius // 2))
-        elif style == "rift":
-            pygame.draw.circle(glow, (*accent, 40), (cx, cy), self.radius * 2)
-            pygame.draw.arc(glow, (*accent, 220), (cx - self.radius * 2 + 4, cy - self.radius * 2 + 4, self.radius * 4 - 8, self.radius * 4 - 8), 0.6 + self.spin * 0.16, 4.9 + self.spin * 0.16, 3)
-            pygame.draw.polygon(glow, (*dark, 230), [(cx - 12, cy), (cx, cy - 16), (cx + 12, cy), (cx, cy + 16)])
-            pygame.draw.circle(glow, (*core, 210), (cx + 3, cy - 2), max(2, self.radius // 3))
-        elif style == "thorn":
-            pygame.draw.circle(glow, (*accent, 42), (cx, cy), self.radius * 2)
-            pygame.draw.polygon(glow, (*body, 235), [(cx - 3, cy - 16), (cx + 12, cy - 2), (cx + 2, cy + 8), (cx + 14, cy + 18), (cx - 8, cy + 6), (cx - 1, cy - 1)])
-            pygame.draw.line(glow, (*core, 220), (cx - 14, cy - 10), (cx + 14, cy + 10), 2)
-            pygame.draw.circle(glow, (*core, 220), (cx, cy), max(3, self.radius // 2))
-        elif style == "sentinel":
-            pygame.draw.circle(glow, (*accent, 52), (cx, cy), self.radius * 2)
-            pygame.draw.polygon(glow, (*body, 230), [(cx, cy - 18), (cx + 14, cy - 4), (cx + 8, cy + 16), (cx - 8, cy + 16), (cx - 14, cy - 4)])
-            pygame.draw.polygon(glow, (*core, 240), [(cx, cy - 10), (cx + 7, cy), (cx, cy + 9), (cx - 7, cy)])
-            pygame.draw.line(glow, (*accent, 210), (cx - 14, cy), (cx + 14, cy), 2)
-        else:  # aurora
-            pygame.draw.circle(glow, (*accent, 54), (cx, cy), self.radius * 2)
-            pygame.draw.arc(glow, (*body, 230), (cx - self.radius * 2 + 4, cy - self.radius * 2 + 4, self.radius * 4 - 8, self.radius * 4 - 8), 0.7, 5.5, 2)
-            pygame.draw.arc(glow, (*core, 220), (cx - self.radius * 2 + 10, cy - self.radius * 2 + 10, self.radius * 4 - 20, self.radius * 4 - 20), 1.0, 5.0, 2)
-            pygame.draw.circle(glow, (*core, 230), (cx, cy), max(3, self.radius // 2))
-
-        if intro_s < 1.0:
-            entry = get_clear_surface((size, size), ("boss_projectile_entry", style, self.radius, idx))
-            entry_r = int(self.radius * (2.2 - 0.95 * intro_s))
-            pygame.draw.circle(entry, (*accent, int(160 * (1.0 - intro_s))), (cx, cy), entry_r, 2)
-            pygame.draw.circle(entry, (*core, int(160 * (1.0 - intro_s))), (cx, cy), max(2, int(self.radius * intro_s)))
-            glow.blit(entry, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
+            entry_r = int(self.radius * (2.1 - 0.9 * intro_s))
+            pygame.draw.circle(glow, (*self.accent, int(160 * (1.0 - intro_s))), (cx, cy), entry_r, 2)
+            pygame.draw.circle(glow, (*self.core, int(160 * (1.0 - intro_s))), (cx, cy), max(2, int(self.radius * intro_s)))
 
         surf.blit(glow, glow.get_rect(center=(self.x, self.y)))
+
 
 def draw_boss_bar(surf: pygame.Surface, boss, font: pygame.font.Font):
     spec = boss.spec()
@@ -3470,7 +4126,7 @@ def draw_boss_bar(surf: pygame.Surface, boss, font: pygame.font.Font):
         draw_round_rect(bg, (12, 16, 26, 235), bg.get_rect(), radius=18)
         draw_round_rect(bg, (*dark, 190), bg.get_rect(), radius=18, width=2)
 
-    rail = pygame.Surface((bar_w, bar_h), pygame.SRCALPHA)
+    rail = get_clear_surface((bar_w, bar_h), ("boss_bar_rail", boss.boss_id, bar_w, bar_h))
     pygame.draw.rect(rail, (*accent, 40 + int(72 * phase_glow)), (12, 8, bar_w - 24, 5), border_radius=2)
     pygame.draw.rect(rail, (*core, 22 + int(24 * phase_glow)), (18, 14, bar_w - 36, 2), border_radius=1)
     pygame.draw.rect(rail, (*accent, 18 + int(30 * phase_glow)), (14, bar_h - 11, bar_w - 28, 2), border_radius=1)
@@ -3737,7 +4393,7 @@ class Boss:
         else:
             spin = math.sin(self.death_timer * 9.0) * 12.0 * (1.0 - progress)
             scale = base_scale
-        img = pygame.transform.rotozoom(img, spin, scale)
+        img = get_cached_rotated_surface(img, spin, key=("boss_death_draw", art, spec.get("short", art), int(progress * 120), int(self.death_timer * 20), int(fade), img.get_size()), scale=scale, angle_step=1.0)
         img.set_alpha(fade)
 
         ox = int(math.sin(self.death_timer * 9.5) * (4 + 10 * (1.0 - progress)))
@@ -3860,7 +4516,7 @@ class Boss:
                 h = 42 + int(progress * 20)
                 petal = pygame.Surface((w * 2 + 8, h * 2 + 8), pygame.SRCALPHA)
                 pygame.draw.ellipse(petal, a(accent, 180 - i * 10), (4, 4, w * 2, h * 2))
-                petal = pygame.transform.rotozoom(petal, math.degrees(ang) + self.death_timer * 10.0, 1.0)
+                petal = get_cached_rotated_surface(petal, math.degrees(ang) + self.death_timer * 10.0, key=("boss_death_petal", art, i, w, h, int(progress * 100), int(self.death_timer * 10)), scale=1.0, angle_step=3.0)
                 surf.blit(petal, petal.get_rect(center=(self.x + px - cx, self.y + py - cy)))
             for i in range(6):
                 y = cy + 8 + i * 20
@@ -4086,14 +4742,44 @@ class Boss:
     def _target_pipe(self, pipes: List[Pipe]) -> Optional[Pipe]:
         if not pipes:
             return None
-        candidates = [p for p in pipes if p.x + p.width > self.x - 120]
-        return min(candidates or pipes, key=lambda p: abs((p.x + p.width * 0.5) - self.x))
+        best = None
+        best_dist = 1e30
+        fallback = None
+        fallback_dist = 1e30
+        target_x = self.x
+        min_x = target_x - 120
+        for pipe in pipes:
+            center = pipe.x + pipe.width * 0.5
+            dist = abs(center - target_x)
+            if dist < fallback_dist:
+                fallback = pipe
+                fallback_dist = dist
+            if pipe.x + pipe.width > min_x and dist < best_dist:
+                best = pipe
+                best_dist = dist
+        return best or fallback
 
     def _spawn_projectile(self, projectiles: List[BossProjectile], x: float, y: float, vx: float, vy: float, radius: int):
         # Cap vertical drift so a projectile can't cross the full pipe gap during
         # its screen transit — prevents bullets from sealing the only exit.
         vy = clamp(float(vy), -50.0, 50.0)
-        projectiles.append(BossProjectile(x, y, vx, vy, radius, kind=self.spec().get("projectile", self.spec()["attack"]), boss_id=self.boss_id))
+        spec = self.spec()
+        proj = get_projectile_from_pool()
+        proj.x = float(x)
+        proj.y = float(y)
+        proj.vx = float(vx)
+        proj.vy = float(vy)
+        proj.radius = int(radius)
+        proj.kind = spec.get("projectile", spec.get("attack", "aegis"))
+        proj.boss_id = self.boss_id
+        proj.spin = 0.0
+        proj.age = 0.0
+        proj.accent = spec["accent"]
+        proj.core = spec["core"]
+        proj.dark = spec["dark"]
+        proj.body = spec["body"]
+        proj.is_hell = spec.get("short") == "HELL"
+        projectiles.append(proj)
 
     def spawn_attack(self, difficulty: Difficulty, pipes: List[Pipe], projectiles: List[BossProjectile]):
         target_pipe = self._target_pipe(pipes)
@@ -4101,13 +4787,15 @@ class Boss:
             return
 
         spec = self.spec()
+        spec_get = spec.get
+        diff_name = difficulty.name
         gap_top = target_pipe.gap_y - target_pipe.gap_size * 0.5
         gap_bottom = target_pipe.gap_y + target_pipe.gap_size * 0.5
         # Safety = minimum distance from gap edge where projectiles may spawn.
         # Must account for projectile radius (~10 px) + reaction room for the player.
         # Larger margins on easier modes; INSANE stays tight but still passable.
-        safety = 44 if difficulty.name == "EASY" else 38 if difficulty.name == "NORMAL" else 32
-        if difficulty.name == "INSANE":
+        safety = 44 if diff_name == "EASY" else 38 if diff_name == "NORMAL" else 32
+        if diff_name == "INSANE":
             safety = 26
         # Enforce a minimum lane height so the lane is actually usable
         min_lane_h = 36
@@ -4123,68 +4811,76 @@ class Boss:
         if not safe_lanes:
             safe_lanes = [(70, 140), (HEIGHT - 150, HEIGHT - 92)]
 
-        speeds = spec.get("speeds", {})
-        base_speed = speeds.get(difficulty.name, speeds.get("NORMAL", 156))
-        speed = (base_speed + self.phase * (20 + self.boss_id)) * 0.92
+        safe_len = len(safe_lanes)
+        speeds = spec_get("speeds", {})
+        base_speed = speeds.get(diff_name, speeds.get("NORMAL", 156))
+        phase = self.phase
+        boss_id = self.boss_id
+        phase_timer = self.phase_timer
+        speed = (base_speed + phase * (20 + boss_id)) * 0.92
         speed += difficulty.pipe_speed * 0.08
-        if difficulty.name == "INSANE":
+        if diff_name == "INSANE":
             speed *= 1.08
         # Spawn bullets far enough past the pipe exit that the bird has room to
         # clear the gap before encountering the shot.  Extra offset on INSANE where
         # timing pressure is highest.
-        x_offset = 28 if difficulty.name == "INSANE" else 18
+        x_offset = 28 if diff_name == "INSANE" else 18
         x = target_pipe.x + target_pipe.width + x_offset
-        phase = self.phase
-        family = spec.get("attack", "aegis")
+        family = spec_get("attack", "aegis")
 
         def lane_center(lane):
             return (lane[0] + lane[1]) * 0.5
 
+        randint = random.randint
+        uniform = random.uniform
+        sin = math.sin
+        cos = math.cos
+
         if family == "aegis":
             count = 1 if phase == 1 else 2 if phase == 2 else 3
             for i in range(count):
-                lane = safe_lanes[i % len(safe_lanes)]
-                y = clamp(lane_center(lane) + random.randint(-12, 12), 110, HEIGHT - 110)
-                vy = random.uniform(-9, 9) if phase < 3 else random.uniform(-13, 13)
-                self._spawn_projectile(projectiles, x + i * 12, y, -speed, vy, 8 if difficulty.name == "EASY" else 9 if difficulty.name == "NORMAL" else 10)
+                lane = safe_lanes[i % safe_len]
+                y = clamp(lane_center(lane) + randint(-12, 12), 110, HEIGHT - 110)
+                vy = uniform(-9, 9) if phase < 3 else uniform(-13, 13)
+                self._spawn_projectile(projectiles, x + i * 12, y, -speed, vy, 8 if diff_name == "EASY" else 9 if diff_name == "NORMAL" else 10)
         elif family == "tempest":
             count = 2 if phase == 1 else 3 if phase == 2 else 4
             spread = 0.8 if phase == 1 else 1.0 if phase == 2 else 1.18
             for i in range(count):
-                lane = safe_lanes[i % len(safe_lanes)]
-                y = random.uniform(lane[0], lane[1])
+                lane = safe_lanes[i % safe_len]
+                y = uniform(lane[0], lane[1])
                 offset = (i - (count - 1) / 2) * 0.48
-                vy = offset * 44 * spread + random.uniform(-7, 7)
+                vy = offset * 44 * spread + uniform(-7, 7)
                 self._spawn_projectile(projectiles, x + i * 8, y, -speed * (1.0 if phase < 3 else 1.06), vy, 8 if phase == 1 else 9)
         elif family == "void":
             count = 2 if phase == 1 else 3 if phase == 2 else 4
             for i in range(count):
-                lane = safe_lanes[i % len(safe_lanes)]
-                y = random.uniform(lane[0], lane[1])
-                swirl = math.sin(self.phase_timer * (2.0 + i * 0.16) + i) * (18 + phase * 4)
-                vy = swirl + random.uniform(-10, 10)
+                lane = safe_lanes[i % safe_len]
+                y = uniform(lane[0], lane[1])
+                swirl = sin(phase_timer * (2.0 + i * 0.16) + i) * (18 + phase * 4)
+                vy = swirl + uniform(-10, 10)
                 self._spawn_projectile(projectiles, x + i * 10, y, -speed * 1.05, vy, 8 if phase < 3 else 9)
         elif family == "chrono":
             count = 2 if phase == 1 else 3 if phase == 2 else 4
             for i in range(count):
-                lane = safe_lanes[i % len(safe_lanes)]
-                y = clamp(lane_center(lane) + math.sin(self.phase_timer * 3.0 + i) * 30, 96, HEIGHT - 96)
+                lane = safe_lanes[i % safe_len]
+                y = clamp(lane_center(lane) + sin(phase_timer * 3.0 + i) * 30, 96, HEIGHT - 96)
                 vx = -speed * (1.0 + 0.04 * i)
-                vy = random.uniform(-18, 18) + math.cos(self.phase_timer * 4.0 + i) * (12 + phase * 4)
+                vy = uniform(-18, 18) + cos(phase_timer * 4.0 + i) * (12 + phase * 4)
                 self._spawn_projectile(projectiles, x + i * 14, y, vx, vy, 8 if phase == 1 else 9 if phase == 2 else 10)
         elif family == "prism":
             count = 2 if phase == 1 else 3 if phase == 2 else 4
             for i in range(count):
-                lane = safe_lanes[i % len(safe_lanes)]
+                lane = safe_lanes[i % safe_len]
                 y = clamp(lane_center(lane) + (i - (count - 1) / 2) * 18, 102, HEIGHT - 102)
-                vy = (i - (count - 1) / 2) * 30 + math.sin(self.phase_timer * 2.4 + i) * 10
+                vy = (i - (count - 1) / 2) * 30 + sin(phase_timer * 2.4 + i) * 10
                 self._spawn_projectile(projectiles, x + i * 10, y, -speed * 1.02, vy, 8 if phase < 2 else 9 if phase == 2 else 10)
         elif family == "bloom":
             count = 2 if phase == 1 else 3 if phase == 2 else 4
             for i in range(count):
-                lane = safe_lanes[i % len(safe_lanes)]
-                y = random.uniform(lane[0], lane[1])
-                vy = math.sin(self.phase_timer * 2.2 + i) * (20 + phase * 4)
+                lane = safe_lanes[i % safe_len]
+                y = uniform(lane[0], lane[1])
+                vy = sin(phase_timer * 2.2 + i) * (20 + phase * 4)
                 if i % 2 == 0:
                     vy -= 10
                 self._spawn_projectile(projectiles, x + i * 11, y, -speed * 0.98, vy, 8 if phase == 1 else 9)
@@ -4192,19 +4888,19 @@ class Boss:
             if spec.get("name") == "HELL":
                 count = 4 if phase == 1 else 5 if phase == 2 else 6
                 for i in range(count):
-                    lane = safe_lanes[i % len(safe_lanes)]
-                    y = clamp(lane_center(lane) + random.randint(-34, 34), 88, HEIGHT - 88)
+                    lane = safe_lanes[i % safe_len]
+                    y = clamp(lane_center(lane) + randint(-34, 34), 88, HEIGHT - 88)
                     # HELL should feel oppressive: denser lanes, faster falloff, and layered follow-up shots.
-                    vy = random.uniform(14, 38) + phase * 7 + (i - (count - 1) / 2) * 4.0
+                    vy = uniform(14, 38) + phase * 7 + (i - (count - 1) / 2) * 4.0
                     radius = 8 if phase == 1 else 9 if phase == 2 else 10
                     self._spawn_projectile(projectiles, x + i * 10, y, -speed * 1.14, vy, radius)
                     if phase >= 2:
                         self._spawn_projectile(
                             projectiles,
                             x + 6 + i * 10,
-                            clamp(y + random.randint(-12, 12), 84, HEIGHT - 84),
+                            clamp(y + randint(-12, 12), 84, HEIGHT - 84),
                             -speed * 0.95,
-                            -vy * 0.56 + random.uniform(-6, 6),
+                            -vy * 0.56 + uniform(-6, 6),
                             max(6, radius - 1),
                         )
                     if phase >= 3 and i % 2 == 0:
@@ -4220,44 +4916,44 @@ class Boss:
             else:
                 count = 2 if phase == 1 else 3 if phase == 2 else 4
                 for i in range(count):
-                    lane = safe_lanes[i % len(safe_lanes)]
-                    y = clamp(lane_center(lane) + random.randint(-20, 20), 96, HEIGHT - 96)
-                    vy = random.uniform(8, 28) + phase * 4
+                    lane = safe_lanes[i % safe_len]
+                    y = clamp(lane_center(lane) + randint(-20, 20), 96, HEIGHT - 96)
+                    vy = uniform(8, 28) + phase * 4
                     self._spawn_projectile(projectiles, x + i * 12, y, -speed * 1.04, vy, 8 if phase < 3 else 9)
         elif family == "tide":
             count = 2 if phase == 1 else 3 if phase == 2 else 4
             for i in range(count):
-                lane = safe_lanes[i % len(safe_lanes)]
-                y = clamp(lane_center(lane) + math.sin(self.phase_timer * 2.3 + i) * 32, 100, HEIGHT - 100)
-                vy = math.cos(self.phase_timer * 2.0 + i) * (16 + phase * 4)
+                lane = safe_lanes[i % safe_len]
+                y = clamp(lane_center(lane) + sin(phase_timer * 2.3 + i) * 32, 100, HEIGHT - 100)
+                vy = cos(phase_timer * 2.0 + i) * (16 + phase * 4)
                 self._spawn_projectile(projectiles, x + i * 14, y, -speed * 0.98, vy, 8 if phase == 1 else 9 if phase == 2 else 10)
         elif family == "frost":
             count = 3 if phase == 1 else 4 if phase == 2 else 5
             for i in range(count):
-                lane = safe_lanes[i % len(safe_lanes)]
-                y = random.uniform(lane[0], lane[1])
-                vy = (i - (count - 1) / 2) * 18 + math.sin(self.phase_timer * 3.2 + i) * 10
+                lane = safe_lanes[i % safe_len]
+                y = uniform(lane[0], lane[1])
+                vy = (i - (count - 1) / 2) * 18 + sin(phase_timer * 3.2 + i) * 10
                 self._spawn_projectile(projectiles, x + i * 10, y, -speed * 1.08, vy, 7 if phase == 1 else 8 if phase == 2 else 9)
         elif family == "stellar":
             count = 3 if phase == 1 else 4 if phase == 2 else 5
             for i in range(count):
-                lane = safe_lanes[i % len(safe_lanes)]
-                y = clamp(lane_center(lane) + math.sin(self.phase_timer * 1.7 + i) * 26, 98, HEIGHT - 98)
-                vy = (i - (count - 1) / 2) * 22 + math.cos(self.phase_timer * 2.8 + i) * 10
+                lane = safe_lanes[i % safe_len]
+                y = clamp(lane_center(lane) + sin(phase_timer * 1.7 + i) * 26, 98, HEIGHT - 98)
+                vy = (i - (count - 1) / 2) * 22 + cos(phase_timer * 2.8 + i) * 10
                 self._spawn_projectile(projectiles, x + i * 10, y, -speed * 1.03, vy, 8 if phase == 1 else 9)
         elif family == "obsidian":
             count = 2 if phase == 1 else 3 if phase == 2 else 4
             for i in range(count):
-                lane = safe_lanes[i % len(safe_lanes)]
-                y = clamp(lane_center(lane) + random.randint(-14, 14), 98, HEIGHT - 98)
-                vy = random.uniform(-6, 12) + phase * 3
+                lane = safe_lanes[i % safe_len]
+                y = clamp(lane_center(lane) + randint(-14, 14), 98, HEIGHT - 98)
+                vy = uniform(-6, 12) + phase * 3
                 self._spawn_projectile(projectiles, x + i * 14, y, -speed * 1.00, vy, 9 if phase < 3 else 10)
         else:  # aurora
             count = 2 if phase == 1 else 3 if phase == 2 else 4
             for i in range(count):
-                lane = safe_lanes[i % len(safe_lanes)]
-                y = clamp(lane_center(lane) + math.sin(self.phase_timer * 2.8 + i) * 22, 104, HEIGHT - 104)
-                vy = math.sin(self.phase_timer * 3.2 + i) * (18 + phase * 3)
+                lane = safe_lanes[i % safe_len]
+                y = clamp(lane_center(lane) + sin(phase_timer * 2.8 + i) * 22, 104, HEIGHT - 104)
+                vy = sin(phase_timer * 3.2 + i) * (18 + phase * 3)
                 self._spawn_projectile(projectiles, x + i * 12, y, -speed * 1.01, vy, 8 if phase == 1 else 9 if phase == 2 else 10)
 
     def draw(self, surf: pygame.Surface, font: pygame.font.Font, difficulty: Difficulty):
@@ -4405,6 +5101,9 @@ class Game:
         self.menu_scroll = 0.0
         self.overlay_cache = {}
         self.hitbox_overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self.profile_enabled = os.environ.get("SPB_PROFILE", "0") == "1"
+        self.profile_stats = {"update_play": 0.0, "draw_play": 0.0}
+        self.profile_frames = 0
         self._settings_dirty = False
         self._last_settings_save = 0.0
         self._settings_save_interval = 0.75
@@ -5188,6 +5887,7 @@ class Game:
     def reset_world(self):
         self.theme_index = 0
         self.time_alive = 0.0
+        self.frame_count = 0  # Track frames for caching
         self.score = 0
         self.combo = 0
         self.spawn_timer = 0.0
@@ -5217,7 +5917,7 @@ class Game:
         self.time_scale = 1.0
         self.screen_shake = 0.0
         self.flash = 0.0
-        self.active_effects = {"magnet": 0.0, "boost": 0.0, "multiplier": 0.0}
+        self.active_effects = {"magnet": 0.0, "multiplier": 0.0}
         self.button_fx = []
         self.hold_to_restart = 0.0
         self.run_finalized = False
@@ -5294,6 +5994,9 @@ class Game:
             self.sounds.play("boss")
         else:
             self.boss_mode = False
+            if mode == "ARCADE":
+                self.boss_entry_fade_total = 0.72
+                self.boss_entry_fade = 0.72
         self.ensure_quest_state()
         self.evaluate_meta(award_rewards=False)
         self.save_settings()
@@ -5305,6 +6008,14 @@ class Game:
         if self.boss_mode:
             return BOSS_THEMES[self.boss_index % len(BOSS_THEMES)]
         return THEMES[self.theme_index % len(THEMES)]
+
+    @property
+    def _cached_theme(self) -> dict:
+        """Cache current theme to avoid repeated lookups per frame."""
+        if not hasattr(self, '_theme_cache') or self._theme_cache_frame != self.frame_count:
+            self._theme_cache = self.current_theme()
+            self._theme_cache_frame = self.frame_count
+        return self._theme_cache
 
     def completion_coin_reward(self) -> int:
         """Return the bonus completion reward, separate from coins collected in the run."""
@@ -5345,10 +6056,16 @@ class Game:
         self.boss_intro = 0.0
         self.message = ""
         self.message_timer = max(self.message_timer, self.boss_clear_duration)
+        for proj in self.projectiles:
+            return_projectile_to_pool(proj)
         self.projectiles.clear()
+        for orb in self.orbs:
+            return_orb_to_pool(orb)
         self.orbs.clear()
         self.spawn_timer = 0.0
-        self.sounds.play("win")
+        spec = self.boss.spec()
+        self.sounds.play(f"boss_death_{spec['short'].lower()}")
+        self._spawn_defeat_env_burst(spec)
 
     def finalize_boss_clear(self):
         if not self.boss_clear_pending:
@@ -5612,7 +6329,6 @@ class Game:
             "MENU": left + (w + gap) * 2,
         }
         return pygame.Rect(mapping.get(kind, left), y, w, h)
-
 
     def pause_toggle_rect(self) -> pygame.Rect:
         return pygame.Rect(WIDTH - 72, 14, 52, 36)
@@ -5938,9 +6654,47 @@ class Game:
     def item_multiplier(self) -> int:
         return 2 if self.active_effects["multiplier"] > 0 else 1
 
+    def powerup_spawn_table(self, difficulty: Difficulty) -> List[Tuple[str, float]]:
+        tables = {
+            "EASY": [
+                ("coin", 0.32),
+                ("magnet", 0.26),
+                ("shield", 0.18),
+                ("multiplier", 0.24),
+            ],
+            "NORMAL": [
+                ("coin", 0.33),
+                ("magnet", 0.25),
+                ("shield", 0.16),
+                ("multiplier", 0.26),
+            ],
+            "HARD": [
+                ("coin", 0.34),
+                ("magnet", 0.24),
+                ("shield", 0.15),
+                ("multiplier", 0.27),
+            ],
+            "INSANE": [
+                ("coin", 0.35),
+                ("magnet", 0.23),
+                ("shield", 0.14),
+                ("multiplier", 0.28),
+            ],
+        }
+        return list(tables.get(difficulty.name, tables["NORMAL"]))
+
     def add_particle(self, x, y, vx, vy, life, size, color, gravity=0.0):
         if len(self.particles) < 240:
-            self.particles.append(Particle(x, y, vx, vy, life, size, color, gravity))
+            p = get_particle_from_pool()
+            p.x = float(x)
+            p.y = float(y)
+            p.vx = float(vx)
+            p.vy = float(vy)
+            p.life = float(life)
+            p.size = float(size)
+            p.color = color
+            p.gravity = float(gravity)
+            self.particles.append(p)
 
     def add_burst(self, x, y, base_color, amount=10, speed=180):
         for _ in range(amount):
@@ -5958,7 +6712,14 @@ class Game:
 
     def add_text(self, text, x, y, color=WHITE):
         if len(self.texts) < 20:
-            self.texts.append(FloatingText(str(text).upper(), x, y, -24, 1.0, color))
+            t = get_text_from_pool()
+            t.text = str(text).upper()
+            t.x = float(x)
+            t.y = float(y)
+            t.vy = -24.0
+            t.life = 1.0
+            t.color = color
+            self.texts.append(t)
 
     def queue_notification(self, title: str, subtitle: str = "", color: Tuple[int, int, int] = (255, 220, 140), *, duration: float = 2.8):
         if not hasattr(self, "notifications"):
@@ -6036,16 +6797,13 @@ class Game:
             badge = pygame.Rect(12, height // 2 - 16, 32, 32)
             pygame.draw.rect(panel, (*badge_fill, min(255, alpha)), badge, border_radius=12)
             pygame.draw.rect(panel, (*edge, min(255, alpha)), badge, width=2, border_radius=12)
-            badge_label = render_text_cached(badge_font, badge_text, WHITE)
-            badge_label.set_alpha(alpha)
+            badge_label = get_text_alpha_surface(badge_font, badge_text, WHITE, alpha)
             panel.blit(badge_label, badge_label.get_rect(center=badge.center))
 
-            title_img = render_text_cached(font_title, title, WHITE).copy()
-            title_img.set_alpha(alpha)
+            title_img = get_text_alpha_surface(font_title, title, WHITE, alpha)
             panel.blit(title_img, title_img.get_rect(topleft=(56, 10)))
             if subtitle:
-                subtitle_img = render_text_cached(font_sub, subtitle, WHITE).copy()
-                subtitle_img.set_alpha(alpha)
+                subtitle_img = get_text_alpha_surface(font_sub, subtitle, WHITE, alpha)
                 panel.blit(subtitle_img, subtitle_img.get_rect(topleft=(56, 34)))
 
             glow = get_clear_surface((width, height), ("notification_glow", width, height))
@@ -6059,12 +6817,10 @@ class Game:
             "shield": (100, 230, 255),
             "coin": (255, 220, 100),
             "magnet": (255, 120, 120),
-            "boost": (160, 255, 180),
             "multiplier": (255, 175, 255),
-            "revive": (255, 210, 120),
             "core": (255, 150, 90),
         }.get(kind, WHITE)
-        amount = 8 if kind == "coin" else 10 if kind in ("shield", "magnet", "boost", "revive") else 12
+        amount = 8 if kind == "coin" else 10 if kind in ("shield", "magnet") else 12
         speed = 110 if collected else 140
         if kind == "core":
             amount = 14
@@ -6072,31 +6828,22 @@ class Game:
         self.add_burst(x, y, color, amount=amount, speed=speed)
         if kind == "coin":
             self.add_burst(x, y, (255, 245, 180), amount=6, speed=80)
-            for ang in np.linspace(0, math.tau, 6, endpoint=False):
+            for ang in RING_ARMS_6:
                 self.add_particle(x + math.cos(ang) * 6, y + math.sin(ang) * 6, math.cos(ang) * 35, math.sin(ang) * 35, 0.2, 1.6, (255, 240, 160))
         elif kind == "magnet":
-            for ang in np.linspace(0, math.tau, 8, endpoint=False):
+            for ang in RING_ARMS_8:
                 self.add_particle(x + math.cos(ang) * 7, y + math.sin(ang) * 7, math.cos(ang) * 55, math.sin(ang) * 55, 0.28, 2, (255, 140, 140))
             self.add_burst(x, y, (255, 170, 170), amount=4, speed=70)
-            for ang in np.linspace(0, math.tau, 6, endpoint=False):
+            for ang in RING_ARMS_6:
                 self.add_particle(x + math.cos(ang) * 14, y + math.sin(ang) * 14, math.cos(ang) * 18, math.sin(ang) * 18, 0.18, 1.4, (255, 220, 220))
-        elif kind == "boost":
-            for _ in range(10):
-                self.add_particle(x - random.uniform(4, 10), y + random.uniform(-8, 8), random.uniform(-220, -120), random.uniform(-30, 30), 0.22, random.uniform(1.5, 2.5), (185, 255, 205), gravity=0.0)
-            self.add_burst(x, y, (170, 255, 195), amount=6, speed=110)
         elif kind == "multiplier":
-            for ang in np.linspace(0, math.tau, 10, endpoint=False):
+            for ang in RING_ARMS_10:
                 self.add_particle(x + math.cos(ang) * 8, y + math.sin(ang) * 8, math.cos(ang) * 45, math.sin(ang) * 45, 0.26, 2, (255, 210, 255))
             self.add_burst(x, y, (255, 210, 255), amount=6, speed=100)
         elif kind == "shield":
             self.add_burst(x, y, (180, 245, 255), amount=8, speed=120)
-            for ang in np.linspace(0, math.tau, 6, endpoint=False):
+            for ang in RING_ARMS_6:
                 self.add_particle(x + math.cos(ang) * 7, y + math.sin(ang) * 7, math.cos(ang) * 60, math.sin(ang) * 60, 0.24, 2, (100, 230, 255))
-        elif kind == "revive":
-            self.add_burst(x, y, (255, 242, 210), amount=10, speed=155)
-            for ang in np.linspace(0, math.tau, 8, endpoint=False):
-                self.add_particle(x + math.cos(ang) * 6, y + math.sin(ang) * 6, math.cos(ang) * 70, math.sin(ang) * 70, 0.26, 2.2, (255, 210, 120))
-            self.screen_shake = max(self.screen_shake, 0.08)
         elif kind == "core":
             self.add_burst(x, y, (255, 185, 120), amount=16, speed=175)
             self.add_burst(x, y, (255, 255, 255), amount=6, speed=80)
@@ -6112,9 +6859,7 @@ class Game:
             "shield": (100, 230, 255),
             "coin": (255, 220, 100),
             "magnet": (255, 120, 120),
-            "boost": (160, 255, 180),
             "multiplier": (255, 175, 255),
-            "revive": (255, 210, 120),
             "core": (255, 150, 90),
         }.get(kind, WHITE)
         self.add_burst(x, y, color, amount=10 if kind != "core" else 16, speed=180 if kind != "core" else 220)
@@ -6122,7 +6867,7 @@ class Game:
         if kind == "shield":
             self.screen_shake = max(self.screen_shake, 0.12)
             self.flash = max(self.flash, 0.08)
-            for ang in np.linspace(0, math.tau, 12, endpoint=False):
+            for ang in RING_ARMS_12:
                 self.add_particle(
                     x + math.cos(ang) * 8,
                     y + math.sin(ang) * 8,
@@ -6134,39 +6879,19 @@ class Game:
                     gravity=0.0,
                 )
             self.add_burst(x, y, (180, 245, 255), amount=6, speed=90)
-            for ang in np.linspace(0, math.tau, 6, endpoint=False):
+            for ang in RING_ARMS_6:
                 self.add_particle(x + math.cos(ang) * 16, y + math.sin(ang) * 16, math.cos(ang) * 26, math.sin(ang) * 26, 0.22, 1.6, (255, 255, 255), gravity=0.0)
-        elif kind == "boost":
-            self.screen_shake = max(self.screen_shake, 0.05)
-            for _ in range(12):
-                self.add_particle(x - random.uniform(8, 18), y + random.uniform(-10, 10), random.uniform(-260, -140), random.uniform(-18, 18), 0.24, random.uniform(1.5, 2.4), (185, 255, 205), gravity=0.0)
-            self.add_burst(x, y, (255, 255, 255), amount=4, speed=70)
         elif kind == "magnet":
-            for ang in np.linspace(0, math.tau, 14, endpoint=False):
+            for ang in RING_ARMS_14:
                 self.add_particle(x + math.cos(ang) * 6, y + math.sin(ang) * 6, math.cos(ang) * 60, math.sin(ang) * 60, 0.24, 2, (255, 135, 135))
             self.add_burst(x, y, (255, 255, 255), amount=6, speed=85)
         elif kind == "multiplier":
             self.flash = max(self.flash, 0.06)
-            for ang in np.linspace(0, math.tau, 10, endpoint=False):
+            for ang in RING_ARMS_10:
                 self.add_particle(x + math.cos(ang) * 7, y + math.sin(ang) * 7, math.cos(ang) * 95, math.sin(ang) * 95, 0.24, 2, (255, 210, 255))
             self.add_burst(x, y, (255, 210, 255), amount=5, speed=110)
             self.add_text("X2", x, y - 18, (255, 210, 255))
-        elif kind == "revive":
-            self.screen_shake = max(self.screen_shake, 0.16)
-            self.flash = max(self.flash, 0.12)
-            self.add_burst(x, y, (255, 240, 200), amount=22, speed=260)
-            for ang in np.linspace(0, math.tau, 18, endpoint=False):
-                self.add_particle(
-                    x + math.cos(ang) * 6,
-                    y + math.sin(ang) * 6,
-                    math.cos(ang) * 190,
-                    math.sin(ang) * 190 - 30,
-                    0.34,
-                    2.6,
-                    (255, 225, 140),
-                    gravity=0.0,
-                )
-            self.add_text("REVIVE", x, y - 18, (255, 220, 140))
+            # Text is handled in apply_item() to avoid duplicates
         elif kind == "core":
             self.screen_shake = max(self.screen_shake, 0.10)
             self.flash = max(self.flash, 0.10)
@@ -6256,12 +6981,7 @@ class Game:
             self.bird.shield = 7.0 if self.current_difficulty().name == "EASY" else 6.5 if self.current_difficulty().name == "NORMAL" else 6.0
             self.add_text("SHIELD", self.bird.x, self.bird.y - 24, (100, 230, 255))
             self.spawn_item_use_fx(kind, x, y)
-            self.sounds.play("power")
-        elif kind == "revive":
-            self.bird.revives += 1
-            self.add_text("REVIVE +1", self.bird.x, self.bird.y - 24, (255, 210, 120))
-            self.spawn_item_use_fx(kind, x, y)
-            self.sounds.play("power")
+            self.sounds.play("item_shield")
         elif kind == "coin":
             earned = 10 * self.item_multiplier()
             self.coins += earned
@@ -6269,22 +6989,17 @@ class Game:
             self.run_stats["coins_earned"] += earned
             self.add_text(f"+{earned} COIN", self.bird.x, self.bird.y - 24, (255, 220, 100))
             self.spawn_item_use_fx(kind, x, y)
-            self.sounds.play("score")
+            self.sounds.play("item_coin")
         elif kind == "magnet":
             self.active_effects["magnet"] = 5.8 if self.current_difficulty().name == "EASY" else 5.4 if self.current_difficulty().name == "NORMAL" else 5.0
             self.add_text("Magnet", self.bird.x, self.bird.y - 24, (255, 120, 120))
             self.spawn_item_use_fx(kind, x, y)
-            self.sounds.play("power")
-        elif kind == "boost":
-            self.active_effects["boost"] = 5.0 if self.current_difficulty().name == "EASY" else 4.8 if self.current_difficulty().name == "NORMAL" else 4.5
-            self.add_text("Boost", self.bird.x, self.bird.y - 24, (160, 255, 180))
-            self.spawn_item_use_fx(kind, x, y)
-            self.sounds.play("power")
+            self.sounds.play("item_magnet")
         elif kind == "multiplier":
             self.active_effects["multiplier"] = 6.5 if self.current_difficulty().name == "EASY" else 6.0 if self.current_difficulty().name == "NORMAL" else 5.5
             self.add_text("X2 Bonus", self.bird.x, self.bird.y - 24, (255, 175, 255))
             self.spawn_item_use_fx(kind, x, y)
-            self.sounds.play("power")
+            self.sounds.play("item_multiplier")
         elif kind == "core":
             if self.boss_mode and self.boss:
                 self.boss.hp -= 1
@@ -6295,9 +7010,19 @@ class Game:
                 self.flash = max(self.flash, 0.08)
                 self.add_text("-1 BOSS HP", self.bird.x, self.bird.y - 24, (255, 150, 90))
                 self.spawn_item_use_fx(kind, x, y)
-                self.sounds.play("score")
+                self.sounds.play("item_core")
                 if self.boss.hp <= 0:
                     self.begin_boss_death()
+
+    def spawn_orb(self, x: float, y: float, kind: str, vx: float):
+        orb = get_orb_from_pool()
+        orb.x = float(x)
+        orb.y = float(y)
+        orb.kind = str(kind)
+        orb.vx = float(vx)
+        orb.active = True
+        orb.phase = 0.0
+        self.orbs.append(orb)
 
     def spawn_pipe(self):
         difficulty = self.current_difficulty()
@@ -6329,37 +7054,38 @@ class Game:
         variant_roll = random.random()
         variant = 0
         move_amp = 0.0
-        if not self.boss_mode:
-            if difficulty.name == "INSANE":
-                if variant_roll < 0.24:
-                    variant = 1
-                    move_amp = random.uniform(0.55, 1.18)
-                elif variant_roll < 0.42:
-                    variant = 2
-                    move_amp = random.uniform(0.55, 1.30)
-            else:
-                if variant_roll < 0.18 and self.current_difficulty_index > 0:
-                    variant = 1
-                    move_amp = random.uniform(0.4, 1.0)
-                elif variant_roll < 0.27 and self.current_difficulty_index == 2:
-                    variant = 2
-                    move_amp = random.uniform(0.4, 1.1)
-        pipe = Pipe(WIDTH + 30, gap_y, gap, speed=difficulty.pipe_speed, variant=variant, move_amp=move_amp, theme_index=self.theme_index)
+        if variant_roll < 0.22:
+            variant = 1
+            move_amp = 1.0 if not self.boss_mode else 0.72
+        elif variant_roll < 0.34:
+            variant = 2
+            move_amp = 0.9 if not self.boss_mode else 0.62
+        if self.boss_mode and self.boss:
+            # Keep boss corridors readable by reducing how far moving pipes can drift.
+            move_amp *= 0.82 if self.boss.phase == 1 else 0.68 if self.boss.phase == 2 else 0.58
+
+        pipe = Pipe(
+            x=WIDTH + 120,
+            gap_y=float(gap_y),
+            gap_size=int(gap),
+            width=84,
+            scored=False,
+            variant=variant,
+            move_phase=random.uniform(0.0, math.tau),
+            move_amp=move_amp,
+            speed=float(difficulty.pipe_speed),
+            theme_index=int(self.boss_index if self.boss_mode else self.theme_index),
+        )
         self.pipes.append(pipe)
 
         if not self.boss_mode:
             if random.random() < difficulty.power_rate:
-                if difficulty.name == "EASY":
-                    table = [("coin", 0.25), ("magnet", 0.18), ("boost", 0.17), ("shield", 0.07), ("revive", 0.09), ("multiplier", 0.24)]
-                elif difficulty.name == "NORMAL":
-                    table = [("coin", 0.26), ("magnet", 0.18), ("boost", 0.17), ("shield", 0.06), ("revive", 0.08), ("multiplier", 0.25)]
-                else:
-                    table = [("coin", 0.27), ("magnet", 0.18), ("boost", 0.17), ("shield", 0.05), ("revive", 0.07), ("multiplier", 0.26)]
+                table = self.powerup_spawn_table(difficulty)
                 kinds, weights = zip(*table)
                 kind = random.choices(kinds, weights=weights, k=1)[0]
                 spread = 42 if difficulty.name == "EASY" else 36 if difficulty.name == "NORMAL" else 32
                 orb_y = gap_y + random.randint(-spread, spread)
-                self.orbs.append(Orb(pipe.x + pipe.width * 0.5, orb_y, kind, vx=-difficulty.pipe_speed))
+                self.spawn_orb(pipe.x + pipe.width * 0.5, orb_y, kind, vx=-difficulty.pipe_speed)
                 if kind == "coin":
                     self.run_stats["coins_available"] += 10
         elif self.boss:
@@ -6369,7 +7095,7 @@ class Game:
                 pack_x = pipe.x + pipe.width * 0.5
                 if boss_short == "HELL":
                     y = clamp(gap_y + random.randint(-6, 6), 110, HEIGHT - 110)
-                    self.orbs.append(Orb(pack_x, y, "core", vx=-difficulty.pipe_speed))
+                    self.spawn_orb(pack_x, y, "core", vx=-difficulty.pipe_speed)
                 else:
                     support_kinds, support_weights = zip(*boss_drop["support_table"])
                     pack_size = 1
@@ -6386,7 +7112,7 @@ class Game:
                         y = clamp(gap_y + random.randint(-y_spread, y_spread), 110, HEIGHT - 110)
                         if kind == "core":
                             y = clamp(gap_y + random.randint(-8, 8), 110, HEIGHT - 110)
-                        self.orbs.append(Orb(pack_x + x_offsets[i], y, kind, vx=-difficulty.pipe_speed))
+                        self.spawn_orb(pack_x + x_offsets[i], y, kind, vx=-difficulty.pipe_speed)
                         if kind == "coin":
                             self.run_stats["coins_available"] += 10
 
@@ -6401,15 +7127,6 @@ class Game:
             self.spawn_shield_break_fx(self.bird.x, self.bird.y)
             self.add_text("SHIELD BREAK", self.bird.x, self.bird.y - 46, (100, 230, 255))
             self.sounds.play("hit")
-            return False
-        if self.bird.revives > 0:
-            self.bird.revives -= 1
-            self.bird.invuln = max(self.bird.invuln, 2.0)
-            self.screen_shake = 0.30
-            self.flash = 0.18
-            self.spawn_item_use_fx("revive", self.bird.x, self.bird.y)
-            self.add_text(f"REVIVE LEFT X{self.bird.revives}", self.bird.x, self.bird.y - 46, (255, 210, 120))
-            self.sounds.play("power")
             return False
         if self.bird.invuln > 0:
             return False
@@ -6435,6 +7152,692 @@ class Game:
             pts.append((mx, my))
         pts.append((x2, y2))
         return pts
+
+    def _spawn_phase_env_burst(self, spec: dict, phase: int):
+        """Fire a dramatic one-shot environmental burst unique to each boss on phase change."""
+        art   = spec.get("art", "aegis")
+        short = spec.get("short", "").upper()
+        bx, by = self.boss.x, self.boss.y
+        # Every burst gets a hard screen-shake proportional to phase
+        self.screen_shake = max(self.screen_shake, 0.35 + 0.10 * phase)
+
+        if short == "HELL" or (art == "ember" and short == "EMBER"):
+            # ── Inferno / Ember: pillar of hellfire rises from the floor ──────
+            self.env_flash = min(1.0, 0.80 + phase * 0.10)
+            self.env_flash_color = (255, 90, 20)
+            self.env_darkness = min(1.0, 0.55 + phase * 0.10)
+            # Dense meteor rain from top
+            for _ in range(38 + phase * 12):
+                x = random.uniform(0, WIDTH)
+                self.env_ambient_particles.append(Particle(
+                    x, random.uniform(-40, -8),
+                    random.uniform(-30, 30),
+                    random.uniform(200, 420),
+                    random.uniform(0.5, 1.2),
+                    random.uniform(4, 8),
+                    random.choice([(255, 80, 20), (255, 150, 40), (255, 220, 80)]),
+                    gravity=80.0,
+                ))
+            # Hellfire columns rising from edges
+            for _ in range(12 + phase * 4):
+                ex = random.choice([
+                    random.uniform(0, 120),
+                    random.uniform(WIDTH - 120, WIDTH),
+                ])
+                self.env_ambient_particles.append(Particle(
+                    ex, HEIGHT,
+                    random.uniform(-40, 40),
+                    random.uniform(-350, -180),
+                    random.uniform(0.6, 1.1),
+                    random.uniform(6, 10),
+                    random.choice([(255, 60, 10), (255, 120, 30)]),
+                    gravity=-30.0,
+                ))
+
+        elif art == "tempest":
+            # ── Tempest: full lightning storm — multiple bolts, massive wind ──
+            self.env_darkness = min(1.0, 0.65 + phase * 0.10)
+            num_bolts = 3 + phase
+            self.env_lightning_bolts.clear()
+            for _ in range(num_bolts):
+                boltx = random.randint(40, WIDTH - 40)
+                self.env_lightning_bolts.append(
+                    self._gen_lightning_bolt(
+                        boltx, 0,
+                        boltx + random.randint(-90, 90),
+                        HEIGHT - 40,
+                        jitter=38, segments=14,
+                    )
+                )
+            self.env_lightning_timer = 0.30 + phase * 0.07
+            self.env_flash = min(1.0, 0.90 + phase * 0.07)
+            self.env_flash_color = (210, 240, 255)
+            # Dense horizontal wind streaks
+            for _ in range(32 + phase * 8):
+                self.env_ambient_particles.append(Particle(
+                    WIDTH + random.uniform(0, 80),
+                    random.uniform(20, HEIGHT - 20),
+                    random.uniform(-540, -280),
+                    random.uniform(-50, 50),
+                    random.uniform(0.2, 0.55),
+                    random.uniform(1, 3),
+                    random.choice([(200, 230, 255), (160, 210, 255), (240, 248, 255)]),
+                    gravity=0.0,
+                ))
+
+        elif art == "void":
+            # ── Void: reality implosion — all particles swirl into boss ───────
+            self.env_darkness = min(1.0, 0.75 + phase * 0.10)
+            self.env_flash = 0.45
+            self.env_flash_color = (60, 10, 120)
+            for _ in range(40 + phase * 10):
+                ang = random.uniform(0, math.tau)
+                dist = random.uniform(80, WIDTH * 0.55)
+                px = bx + math.cos(ang) * dist
+                py = by + math.sin(ang) * dist
+                spd = random.uniform(140, 300)
+                self.env_ambient_particles.append(Particle(
+                    px, py,
+                    math.cos(ang + math.pi) * spd,
+                    math.sin(ang + math.pi) * spd,
+                    random.uniform(0.35, 0.85),
+                    random.uniform(2, 5),
+                    random.choice([(160, 60, 255), (90, 20, 200), (210, 140, 255)]),
+                    gravity=0.0,
+                ))
+            # Void-rift horizontal tear
+            self.env_lightning_bolts.clear()
+            for _ in range(phase):
+                ry = random.randint(80, HEIGHT - 80)
+                self.env_lightning_bolts.append(
+                    self._gen_lightning_bolt(0, ry, WIDTH, ry + random.randint(-24, 24),
+                                             jitter=12, segments=16)
+                )
+            if phase >= 2:
+                self.env_lightning_timer = 0.22 + phase * 0.04
+                self.env_flash_color = (120, 40, 255)
+
+        elif art == "chrono":
+            # ── Chrono: time-crack — radial clock-hand burst + golden ripple ──
+            self.env_flash = 0.65
+            self.env_flash_color = (255, 210, 80)
+            num_spokes = 12 + phase * 4
+            for i in range(num_spokes):
+                ang = i * (math.tau / num_spokes)
+                spd = random.uniform(120, 280)
+                dist_start = random.uniform(0, 30)
+                self.env_ambient_particles.append(Particle(
+                    bx + math.cos(ang) * dist_start,
+                    by + math.sin(ang) * dist_start,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.5, 1.1),
+                    random.uniform(2, 5),
+                    random.choice([(255, 210, 80), (255, 244, 180), (200, 140, 60)]),
+                    gravity=40.0,
+                ))
+            # Secondary wave of smaller particles
+            for _ in range(16 + phase * 5):
+                ang = random.uniform(0, math.tau)
+                spd = random.uniform(60, 160)
+                self.env_ambient_particles.append(Particle(
+                    bx, by,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.6, 1.2),
+                    random.uniform(1.5, 3),
+                    (255, 220, 120),
+                    gravity=55.0,
+                ))
+
+        elif art == "prism":
+            # ── Prism: rainbow spectrum burst in all directions ───────────────
+            self.env_flash = 0.55
+            rainbow = [(255, 80, 120), (255, 180, 40), (120, 255, 80),
+                       (60, 220, 255), (140, 80, 255), (255, 80, 220)]
+            self.env_flash_color = random.choice(rainbow)
+            for i in range(36 + phase * 10):
+                ang = i * (math.tau / (36 + phase * 10))
+                spd = random.uniform(150, 320)
+                color = rainbow[i % len(rainbow)]
+                self.env_ambient_particles.append(Particle(
+                    bx, by,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.3, 0.8),
+                    random.uniform(2, 5),
+                    color,
+                    gravity=0.0,
+                ))
+            # Wide screen flash strips in two random spectrum colors
+            for _ in range(8 + phase * 3):
+                self.env_ambient_particles.append(Particle(
+                    random.uniform(0, WIDTH),
+                    random.uniform(0, HEIGHT),
+                    0, 0,
+                    random.uniform(0.15, 0.35),
+                    random.uniform(3, 7),
+                    random.choice(rainbow),
+                    gravity=0.0,
+                ))
+
+        elif art == "bloom":
+            # ── Bloom: pollen explosion — spores erupt from floor + sides ─────
+            self.env_flash = 0.40
+            self.env_flash_color = (140, 255, 160)
+            for _ in range(34 + phase * 10):
+                self.env_ambient_particles.append(Particle(
+                    random.uniform(0, WIDTH),
+                    HEIGHT - random.uniform(5, 20),
+                    random.uniform(-80, 80),
+                    random.uniform(-240, -80),
+                    random.uniform(1.2, 2.4),
+                    random.uniform(3, 6),
+                    random.choice([(100, 230, 120), (170, 255, 150), (220, 255, 200),
+                                   (255, 240, 120), (200, 255, 160)]),
+                    gravity=-12.0,
+                ))
+            # Boss-centred petal burst
+            for _ in range(16 + phase * 4):
+                ang = random.uniform(0, math.tau)
+                spd = random.uniform(80, 200)
+                self.env_ambient_particles.append(Particle(
+                    bx, by,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.5, 1.0),
+                    random.uniform(3, 6),
+                    random.choice([(130, 255, 170), (255, 230, 130), (200, 255, 210)]),
+                    gravity=30.0,
+                ))
+
+        elif art == "tide":
+            # ── Tide: massive wave crash — bubbles surge from every edge ──────
+            self.env_flash = 0.65
+            self.env_flash_color = (50, 180, 240)
+            self.env_darkness = min(1.0, 0.30 + phase * 0.08)
+            # Bottom surge
+            for _ in range(28 + phase * 8):
+                self.env_ambient_particles.append(Particle(
+                    random.uniform(0, WIDTH),
+                    HEIGHT - random.uniform(5, 30),
+                    random.uniform(-60, 60),
+                    random.uniform(-220, -80),
+                    random.uniform(0.7, 1.5),
+                    random.uniform(3, 7),
+                    random.choice([(60, 200, 255), (120, 230, 255), (200, 248, 255)]),
+                    gravity=-25.0,
+                ))
+            # Side waves
+            for _ in range(14 + phase * 4):
+                side = random.choice([0, WIDTH])
+                self.env_ambient_particles.append(Particle(
+                    side, random.uniform(HEIGHT * 0.3, HEIGHT),
+                    (-1 if side == WIDTH else 1) * random.uniform(120, 280),
+                    random.uniform(-60, 60),
+                    random.uniform(0.5, 1.0),
+                    random.uniform(3, 6),
+                    (80, 210, 255),
+                    gravity=-15.0,
+                ))
+
+        elif art == "frost":
+            # ── Frost: blizzard wall — snow sheets sweep across the screen ────
+            self.env_flash = 0.60
+            self.env_flash_color = (220, 248, 255)
+            self.env_darkness = min(1.0, 0.40 + phase * 0.10)
+            for _ in range(45 + phase * 12):
+                self.env_ambient_particles.append(Particle(
+                    random.uniform(-20, WIDTH + 20),
+                    random.uniform(-20, HEIGHT // 2),
+                    random.uniform(-90, 90),
+                    random.uniform(100, 280),
+                    random.uniform(0.8, 2.0),
+                    random.uniform(2, 6),
+                    random.choice([(240, 252, 255), (190, 232, 255), (255, 255, 255)]),
+                    gravity=15.0,
+                ))
+            # Ice-shard burst from boss
+            for _ in range(14 + phase * 4):
+                ang = random.uniform(0, math.tau)
+                spd = random.uniform(100, 250)
+                self.env_ambient_particles.append(Particle(
+                    bx, by,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.3, 0.7),
+                    random.uniform(2, 4),
+                    random.choice([(200, 240, 255), (160, 220, 255), (255, 255, 255)]),
+                    gravity=60.0,
+                ))
+
+        elif art == "stellar":
+            # ── Stellar: supernova — shooting stars streak across full screen ─
+            self.env_flash = 0.70
+            self.env_flash_color = (255, 238, 140)
+            for _ in range(14 + phase * 5):
+                sx = random.choice([random.uniform(-20, 0), random.uniform(WIDTH, WIDTH + 20)])
+                sy = random.uniform(0, HEIGHT * 0.6)
+                ang = math.atan2(HEIGHT * 0.5 - sy, WIDTH * 0.5 - sx) + random.uniform(-0.3, 0.3)
+                spd = random.uniform(400, 700)
+                self.env_ambient_particles.append(Particle(
+                    sx, sy,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.25, 0.55),
+                    random.uniform(3, 6),
+                    random.choice([(255, 248, 200), (255, 230, 120), (255, 255, 255)]),
+                    gravity=0.0,
+                ))
+            # Boss starburst
+            for _ in range(20 + phase * 6):
+                ang = random.uniform(0, math.tau)
+                spd = random.uniform(80, 200)
+                self.env_ambient_particles.append(Particle(
+                    bx, by,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.4, 0.9),
+                    random.uniform(2, 5),
+                    random.choice([(255, 240, 160), (255, 200, 80), (255, 255, 220)]),
+                    gravity=0.0,
+                ))
+
+        elif art == "obsidian":
+            # ── Obsidian: dark crystal rain + void darkness surge ─────────────
+            self.env_darkness = min(1.0, 0.65 + phase * 0.10)
+            self.env_flash = 0.45
+            self.env_flash_color = (150, 90, 220)
+            for _ in range(36 + phase * 10):
+                self.env_ambient_particles.append(Particle(
+                    random.uniform(0, WIDTH),
+                    random.uniform(-30, -5),
+                    random.uniform(-50, 50),
+                    random.uniform(200, 380),
+                    random.uniform(0.4, 0.9),
+                    random.uniform(3, 7),
+                    random.choice([(110, 60, 180), (160, 110, 240), (70, 50, 130)]),
+                    gravity=90.0,
+                ))
+            # Diagonal shard streaks
+            for _ in range(10 + phase * 3):
+                sx = random.uniform(0, WIDTH)
+                self.env_ambient_particles.append(Particle(
+                    sx, 0,
+                    random.uniform(-80, 80),
+                    random.uniform(300, 500),
+                    random.uniform(0.3, 0.6),
+                    random.uniform(2, 4),
+                    (180, 130, 255),
+                    gravity=60.0,
+                ))
+
+        elif art == "aurora":
+            # ── Aurora: multi-color ribbon wave floods the upper screen ────────
+            self.env_flash = 0.45
+            aurora_colors = [(132, 255, 232), (160, 120, 255), (120, 200, 255),
+                             (80, 255, 180), (200, 160, 255)]
+            self.env_flash_color = random.choice(aurora_colors)
+            for _ in range(30 + phase * 8):
+                self.env_ambient_particles.append(Particle(
+                    random.uniform(0, WIDTH),
+                    random.uniform(0, HEIGHT * 0.55),
+                    random.uniform(-60, 60),
+                    random.uniform(18, 70),
+                    random.uniform(1.8, 4.0),
+                    random.uniform(5, 10),
+                    random.choice(aurora_colors),
+                    gravity=0.0,
+                ))
+            # Curtain of light from top edge
+            for _ in range(16 + phase * 5):
+                self.env_ambient_particles.append(Particle(
+                    random.uniform(0, WIDTH),
+                    0,
+                    random.uniform(-20, 20),
+                    random.uniform(50, 160),
+                    random.uniform(1.5, 3.0),
+                    random.uniform(4, 8),
+                    random.choice(aurora_colors),
+                    gravity=0.0,
+                ))
+
+        elif art == "nova":
+            # ── Nova: expanding shockwave rings radiate outward from boss ──────
+            self.env_flash = min(1.0, 0.78 + phase * 0.10)
+            self.env_flash_color = (255, 230, 100)
+            self.env_darkness = min(1.0, 0.20 + phase * 0.06)
+            for _ in range(44 + phase * 12):
+                ang = random.uniform(0, math.tau)
+                spd = random.uniform(160, 360)
+                self.env_ambient_particles.append(Particle(
+                    bx, by,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.3, 0.8),
+                    random.uniform(2, 6),
+                    random.choice([(255, 230, 120), (255, 180, 50), (255, 255, 200)]),
+                    gravity=0.0,
+                ))
+            # Corner flares
+            for corner in [(0, 0), (WIDTH, 0), (0, HEIGHT), (WIDTH, HEIGHT)]:
+                ang = math.atan2(by - corner[1], bx - corner[0])
+                for _ in range(5 + phase * 2):
+                    a = ang + random.uniform(-0.5, 0.5)
+                    spd = random.uniform(180, 380)
+                    self.env_ambient_particles.append(Particle(
+                        corner[0], corner[1],
+                        math.cos(a) * spd,
+                        math.sin(a) * spd,
+                        random.uniform(0.3, 0.65),
+                        random.uniform(2, 4),
+                        (255, 220, 100),
+                        gravity=0.0,
+                    ))
+
+        elif art == "rift":
+            # ── Rift: multiple tears rip across the whole screen horizontally ─
+            self.env_darkness = min(1.0, 0.70 + phase * 0.10)
+            self.env_flash = 0.65
+            self.env_flash_color = (100, 50, 255)
+            self.env_lightning_bolts.clear()
+            num_tears = 2 + phase
+            for i in range(num_tears):
+                ry = int(HEIGHT * (i + 1) / (num_tears + 1)) + random.randint(-20, 20)
+                self.env_lightning_bolts.append(
+                    self._gen_lightning_bolt(0, ry, WIDTH, ry + random.randint(-30, 30),
+                                             jitter=22, segments=18)
+                )
+            self.env_lightning_timer = 0.25 + phase * 0.06
+            # Void motes sucked toward tears
+            for _ in range(24 + phase * 8):
+                px = random.uniform(0, WIDTH)
+                py = random.uniform(0, HEIGHT)
+                target_y = HEIGHT // 2
+                spd = random.uniform(80, 200)
+                ang = math.atan2(target_y - py, WIDTH * 0.5 - px)
+                self.env_ambient_particles.append(Particle(
+                    px, py,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.3, 0.7),
+                    random.uniform(2, 4),
+                    random.choice([(120, 60, 255), (80, 30, 200), (180, 120, 255)]),
+                    gravity=0.0,
+                ))
+
+        elif art == "thorn":
+            # ── Thorn: vine tendrils burst from floor and walls ───────────────
+            self.env_flash = 0.38
+            self.env_flash_color = (100, 230, 110)
+            # Floor eruption
+            for _ in range(24 + phase * 8):
+                ex = random.uniform(0, WIDTH)
+                self.env_ambient_particles.append(Particle(
+                    ex, HEIGHT,
+                    random.uniform(-50, 50),
+                    random.uniform(-280, -120),
+                    random.uniform(1.0, 2.0),
+                    random.uniform(3, 6),
+                    random.choice([(80, 200, 90), (130, 255, 140), (60, 160, 70)]),
+                    gravity=-8.0,
+                ))
+            # Wall tendrils
+            for _ in range(12 + phase * 4):
+                side = random.choice([0, WIDTH])
+                self.env_ambient_particles.append(Particle(
+                    side, random.uniform(HEIGHT * 0.4, HEIGHT),
+                    (-1 if side == WIDTH else 1) * random.uniform(100, 240),
+                    random.uniform(-80, -20),
+                    random.uniform(0.6, 1.2),
+                    random.uniform(3, 5),
+                    (100, 220, 110),
+                    gravity=-10.0,
+                ))
+            # Boss spore pulse
+            for _ in range(14 + phase * 4):
+                ang = random.uniform(0, math.tau)
+                spd = random.uniform(60, 180)
+                self.env_ambient_particles.append(Particle(
+                    bx, by,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.5, 1.0),
+                    random.uniform(2, 4),
+                    random.choice([(130, 255, 150), (200, 255, 180), (255, 240, 120)]),
+                    gravity=20.0,
+                ))
+
+        elif art == "aegis":
+            # ── Aegis: expanding hex-ring shockwave from boss ─────────────────
+            self.env_flash = 0.55
+            self.env_flash_color = spec["accent"]
+            for ring_r in range(1, 4 + phase):
+                spd_base = 90 + ring_r * 55
+                count = 8 + ring_r * 4
+                for i in range(count):
+                    ang = i * (math.tau / count)
+                    spd = spd_base + random.uniform(-20, 20)
+                    self.env_ambient_particles.append(Particle(
+                        bx, by,
+                        math.cos(ang) * spd,
+                        math.sin(ang) * spd,
+                        random.uniform(0.4, 0.9),
+                        random.uniform(2, 4),
+                        spec["accent"],
+                        gravity=0.0,
+                    ))
+            # Diagonal hex-flash lines across screen
+            for _ in range(6 + phase * 2):
+                self.env_ambient_particles.append(Particle(
+                    random.uniform(0, WIDTH),
+                    random.uniform(0, HEIGHT),
+                    0, 0,
+                    random.uniform(0.15, 0.30),
+                    random.uniform(2, 4),
+                    spec["core"],
+                    gravity=0.0,
+                ))
+
+        elif art == "sentinel":
+            # ── Sentinel: rotating scan-ring locks with a mechanical burst ────
+            self.env_flash = 0.52
+            self.env_flash_color = (220, 235, 255)
+            # Two rotating scan rings emanating outward
+            for ring in range(2 + phase):
+                count = 12 + ring * 6
+                spd = 100 + ring * 80
+                for i in range(count):
+                    ang = i * (math.tau / count) + ring * 0.4
+                    self.env_ambient_particles.append(Particle(
+                        bx, by,
+                        math.cos(ang) * spd,
+                        math.sin(ang) * spd,
+                        random.uniform(0.4, 0.85),
+                        random.uniform(2, 4),
+                        random.choice([(220, 235, 255), (160, 200, 255), spec["accent"]]),
+                        gravity=0.0,
+                    ))
+            # Scan-line flash strips
+            for _ in range(4 + phase * 2):
+                self.env_ambient_particles.append(Particle(
+                    0, random.uniform(0, HEIGHT),
+                    random.uniform(200, 400),
+                    0,
+                    random.uniform(0.10, 0.22),
+                    random.uniform(1, 2),
+                    (220, 235, 255),
+                    gravity=0.0,
+                ))
+
+    def _spawn_defeat_env_burst(self, spec: dict):
+        """Fire a catastrophic environmental burst when the boss is defeated."""
+        art = spec.get("art", "aegis")
+        short = spec.get("short", "").upper()
+        bx = self.boss.x if self.boss else WIDTH * 0.5
+        by = self.boss.y if self.boss else HEIGHT * 0.5
+
+        self.screen_shake = max(self.screen_shake, 1.10)
+        self.env_lightning_bolts.clear()
+        self.env_lightning_timer = 0.0
+        self.env_flash = 1.0
+        self.env_darkness = max(self.env_darkness, 0.45)
+
+        def emit(x, y, vx, vy, life, size, color, gravity=0.0):
+            self.env_ambient_particles.append(Particle(x, y, vx, vy, life, size, color, gravity=gravity))
+
+        def burst(count, speed_lo, speed_hi, colors, life=(0.35, 0.95), size=(2, 6), gravity=0.0, origin=(bx, by)):
+            ox, oy = origin
+            for _ in range(count):
+                ang = random.uniform(0, math.tau)
+                spd = random.uniform(speed_lo, speed_hi)
+                emit(ox, oy, math.cos(ang) * spd, math.sin(ang) * spd, random.uniform(*life), random.uniform(*size), random.choice(colors), gravity=gravity)
+
+        def rain(count, edge_y, colors, speed_lo, speed_hi, vx_lo, vx_hi, gravity=0.0):
+            for _ in range(count):
+                x = random.uniform(0, WIDTH)
+                emit(x, edge_y, random.uniform(vx_lo, vx_hi), random.uniform(speed_lo, speed_hi), random.uniform(0.45, 1.35), random.uniform(2, 6), random.choice(colors), gravity=gravity)
+
+        # Universal shockwave so every boss still feels like a major event.
+        burst(56, 180, 460, [spec["accent"], spec["core"], (255, 255, 255)], life=(0.35, 1.0), size=(3, 7))
+
+        if short in {"HELL", "EMBER"}:
+            self.env_flash_color = (255, 72, 18)
+            self.env_darkness = 1.0
+            rain(96, -36, [(255, 72, 18), (255, 132, 46), (255, 214, 92)], 180, 620, -70, 70, gravity=90.0)
+            rain(28, HEIGHT + 8, [(255, 70, 0), (255, 120, 30), (255, 220, 70)], -420, -180, -40, 40, gravity=-48.0)
+            for i in range(14):
+                x = 34 + i * 66 + random.uniform(-8, 8)
+                emit(x, HEIGHT - 8, random.uniform(-28, 28), random.uniform(-380, -180), random.uniform(0.45, 0.9), random.uniform(5, 10), random.choice([(255, 64, 0), (255, 140, 30), (255, 220, 90)]), gravity=-24.0)
+
+        elif art == "tempest":
+            self.env_flash_color = (205, 235, 255)
+            self.env_darkness = 1.0
+            self.env_lightning_timer = 0.75
+            self.env_lightning_bolts = [self._gen_lightning_bolt(random.randint(28, WIDTH - 28), 0, random.randint(0, WIDTH), HEIGHT - 20, jitter=48, segments=18) for _ in range(8)]
+            self.env_lightning_bolts += [self._gen_lightning_bolt(0, random.randint(50, HEIGHT - 50), WIDTH, random.randint(40, HEIGHT - 40), jitter=22, segments=14) for _ in range(4)]
+            rain(120, random.uniform(0, HEIGHT), [(200, 225, 255), (150, 205, 255), (255, 255, 255)], -90, -30, -760, -380, gravity=0.0)
+
+        elif art in {"void", "rift"}:
+            self.env_flash_color = (88, 32, 255) if art == "rift" else (120, 50, 190)
+            self.env_darkness = 1.0
+            self.env_lightning_timer = 0.70 if art == "rift" else 0.55
+            self.env_lightning_bolts = []
+            tear_count = 7 if art == "rift" else 5
+            for i in range(tear_count):
+                ry = int(HEIGHT * (i + 0.5) / tear_count) + random.randint(-28, 28)
+                self.env_lightning_bolts.append(self._gen_lightning_bolt(0, ry, WIDTH, ry + random.randint(-50, 50), jitter=28 if art == "rift" else 18, segments=20 if art == "rift" else 16))
+            if art == "rift":
+                for _ in range(3):
+                    self.env_lightning_bolts.append(self._gen_lightning_bolt(random.randint(0, WIDTH // 2), 0, random.randint(WIDTH // 2, WIDTH), HEIGHT, jitter=24, segments=16))
+            for _ in range(90 if art == "rift" else 120):
+                ang = random.uniform(0, math.tau)
+                dist = random.uniform(60, max(WIDTH, HEIGHT) * 0.72)
+                px = bx + math.cos(ang) * dist
+                py = by + math.sin(ang) * dist
+                spd = random.uniform(220, 620)
+                emit(px, py, math.cos(ang + math.pi) * spd, math.sin(ang + math.pi) * spd, random.uniform(0.25, 0.8), random.uniform(2, 6), random.choice([(160, 70, 255), (100, 20, 210), (220, 150, 255), (0, 0, 0)]))
+
+        elif art == "chrono":
+            self.env_flash_color = (255, 214, 92)
+            self.env_darkness = 0.65
+            for i in range(48):
+                ang = i * (math.tau / 48)
+                spd = random.uniform(220, 540)
+                emit(bx + math.cos(ang) * 5, by + math.sin(ang) * 5, math.cos(ang) * spd, math.sin(ang) * spd, random.uniform(0.35, 0.95), random.uniform(2, 6), random.choice([(255, 214, 92), (255, 244, 186), (200, 146, 68), (255, 255, 204)]), gravity=55.0)
+            for r in (64, 124, 206, 318):
+                for _ in range(14):
+                    ang = random.uniform(0, math.tau)
+                    emit(bx + math.cos(ang) * r, by + math.sin(ang) * r, math.cos(ang) * random.uniform(90, 220), math.sin(ang) * random.uniform(90, 220), random.uniform(0.45, 1.0), random.uniform(2, 4), (255, 220, 120), gravity=58.0)
+
+        elif art == "prism":
+            self.env_flash_color = (255, 255, 255)
+            rainbow = [(255, 60, 100), (255, 180, 30), (100, 255, 70), (40, 210, 255), (130, 60, 255), (255, 60, 210)]
+            burst(120, 200, 520, rainbow, life=(0.3, 0.9), size=(3, 7))
+            for i in range(34):
+                emit(random.uniform(0, WIDTH), random.uniform(0, HEIGHT), random.uniform(-140, 140), random.uniform(-140, 140), random.uniform(0.15, 0.40), random.uniform(4, 9), rainbow[i % len(rainbow)])
+
+        elif art in {"bloom", "thorn"}:
+            self.env_flash_color = (120, 255, 150)
+            self.env_darkness = 0.30 if art == "bloom" else 0.42
+            palette = [(90, 220, 110), (160, 255, 140), (220, 255, 195), (255, 240, 110), (190, 255, 150)]
+            burst(56 if art == "bloom" else 72, 120, 360, palette, life=(0.9, 2.6), size=(3, 8), gravity=-18.0)
+            for i in range(18):
+                ang = i * (math.tau / 18)
+                spd = random.uniform(120, 260)
+                emit(bx, by, math.cos(ang) * spd, math.sin(ang) * spd, random.uniform(0.45, 1.2), random.uniform(4, 8), random.choice([(120, 255, 160), (255, 230, 120), (200, 255, 210)]), gravity=30.0)
+            for _ in range(18):
+                x = random.uniform(0, WIDTH)
+                emit(x, HEIGHT - random.uniform(8, 40), random.uniform(-60, 60), random.uniform(-160, -40), random.uniform(1.0, 2.4), random.uniform(2, 5), random.choice(palette), gravity=-10.0)
+
+        elif art == "tide":
+            self.env_flash_color = (40, 170, 240)
+            self.env_darkness = 0.75
+            burst(48, 120, 360, [(40, 180, 255), (100, 220, 255), (200, 248, 255), (255, 255, 255)], life=(0.6, 1.8), size=(3, 8), gravity=-25.0, origin=(bx, HEIGHT - 22))
+            for side in (0, WIDTH):
+                for _ in range(20):
+                    emit(side, random.uniform(HEIGHT * 0.2, HEIGHT), (-1 if side == WIDTH else 1) * random.uniform(200, 520), random.uniform(-100, 100), random.uniform(0.45, 1.0), random.uniform(4, 8), (60, 200, 255), gravity=-20.0)
+
+        elif art == "frost":
+            self.env_flash_color = (220, 248, 255)
+            self.env_darkness = 0.85
+            rain(120, random.uniform(-20, HEIGHT), [(240, 252, 255), (185, 228, 255), (255, 255, 255)], -140, 140, -120, 120, gravity=16.0)
+            burst(56, 180, 460, [(200, 240, 255), (155, 215, 255), (255, 255, 255)], life=(0.25, 0.9), size=(3, 7), gravity=70.0)
+
+        elif art in {"stellar", "nova"}:
+            self.env_flash_color = (255, 240, 130)
+            self.env_darkness = 0.30 if art == "stellar" else 0.55
+            burst(90 if art == "stellar" else 140, 220, 560, [(255, 240, 160), (255, 200, 60), (255, 255, 210), (255, 180, 40)], life=(0.25, 1.1), size=(3, 8))
+            if art == "stellar":
+                for i in range(60):
+                    sx = random.choice([random.uniform(-30, 0), random.uniform(WIDTH, WIDTH + 30)])
+                    sy = random.uniform(0, HEIGHT)
+                    ang = math.atan2(HEIGHT * 0.5 - sy, WIDTH * 0.5 - sx) + random.uniform(-0.5, 0.5)
+                    emit(sx, sy, math.cos(ang) * random.uniform(500, 900), math.sin(ang) * random.uniform(500, 900), random.uniform(0.2, 0.5), random.uniform(4, 8), random.choice([(255, 250, 200), (255, 230, 100), (255, 255, 255)]))
+            else:
+                for corner in [(0, 0), (WIDTH, 0), (0, HEIGHT), (WIDTH, HEIGHT)]:
+                    ang = math.atan2(by - corner[1], bx - corner[0])
+                    for _ in range(16):
+                        a0 = ang + random.uniform(-0.7, 0.7)
+                        spd = random.uniform(250, 550)
+                        emit(corner[0], corner[1], math.cos(a0) * spd, math.sin(a0) * spd, random.uniform(0.25, 0.7), random.uniform(2, 5), (255, 220, 100), gravity=0.0)
+
+        elif art == "obsidian":
+            self.env_flash_color = (130, 70, 220)
+            self.env_darkness = 1.0
+            rain(110, -22, [(100, 50, 170), (155, 100, 240), (60, 40, 120), (190, 140, 255)], 280, 560, -80, 80, gravity=110.0)
+            rain(36, 0, [(180, 120, 255)], 400, 700, -120, 120, gravity=80.0)
+
+        elif art == "aurora":
+            self.env_flash_color = random.choice([(120, 255, 210), (180, 120, 255), (120, 210, 255)])
+            self.env_darkness = 0.30
+            palette = [(132, 255, 232), (160, 120, 255), (120, 200, 255), (80, 255, 180), (200, 160, 255), (255, 255, 200)]
+            for _ in range(120):
+                emit(random.uniform(0, WIDTH), random.uniform(0, HEIGHT), random.uniform(-90, 90), random.uniform(20, 100), random.uniform(1.5, 4.5), random.uniform(6, 14), random.choice(palette), gravity=0.0)
+            for _ in range(40):
+                emit(random.uniform(0, WIDTH), 0, random.uniform(-30, 30), random.uniform(80, 240), random.uniform(1.2, 3.0), random.uniform(5, 10), random.choice(palette), gravity=0.0)
+
+        elif art == "sentinel":
+            self.env_flash_color = (220, 230, 255)
+            self.env_darkness = 0.40
+            for _ in range(44):
+                emit(random.uniform(0, WIDTH), random.uniform(0, HEIGHT), 0, 0, random.uniform(0.2, 0.5), random.uniform(1, 2), (220, 230, 255), gravity=0.0)
+            for i in range(10):
+                x = 72 + i * 84
+                emit(x, HEIGHT - 110, 0, -random.uniform(40, 100), random.uniform(0.4, 0.9), random.uniform(3, 5), random.choice([(180, 210, 255), (220, 230, 255)]), gravity=0.0)
+
+        else:
+            self.env_flash_color = spec.get("accent", (255, 220, 140))
+            self.env_darkness = 0.50
+            burst(72, 160, 420, [spec["accent"], spec["core"], (255, 255, 255)], life=(0.35, 0.95), size=(2, 5))
+            for _ in range(32):
+                ex, ey = random.choice([
+                    (random.uniform(0, WIDTH), 0),
+                    (random.uniform(0, WIDTH), HEIGHT),
+                    (0, random.uniform(0, HEIGHT)),
+                    (WIDTH, random.uniform(0, HEIGHT)),
+                ])
+                emit(ex, ey, (bx - ex) * random.uniform(0.5, 1.5), (by - ey) * random.uniform(0.5, 1.5), random.uniform(0.3, 0.7), random.uniform(2, 5), spec.get("accent", (255, 220, 140)))
 
     def update_boss_env(self, dt: float):
         """Update per-boss environmental hazard state."""
@@ -6476,7 +7879,9 @@ class Game:
             self.env_flash = 0.55 + phase * 0.12
             self.env_flash_color = (255, 120, 40)
             self.screen_shake = max(self.screen_shake, 0.14 + phase * 0.04)
-            for _ in range(22 + phase * 6):
+            # Limit particle creation to prevent lag during boss fights
+            max_particles = 28 + phase * 6
+            for _ in range(min(22 + phase * 6, max_particles)):
                 x = random.uniform(0, WIDTH)
                 self.env_ambient_particles.append(Particle(
                     x, -12,
@@ -6490,7 +7895,7 @@ class Game:
             if is_hell:
                 # HELL: extra darkness + screen-edge hellfire columns
                 self.env_darkness = min(1.0, 0.40 + phase * 0.08)
-                for _ in range(8 + phase * 2):
+                for _ in range(min(8 + phase * 2, 12)):
                     x = random.choice([random.uniform(0, 80), random.uniform(WIDTH - 80, WIDTH)])
                     self.env_ambient_particles.append(Particle(
                         x, HEIGHT - 20,
@@ -6520,8 +7925,9 @@ class Game:
             self.env_flash = 0.70 + phase * 0.10
             self.env_flash_color = (200, 230, 255)
             self.screen_shake = max(self.screen_shake, 0.22 + phase * 0.06)
-            # Wind gusts
-            for _ in range(14 + phase * 4):
+            # Wind gusts - limit particle count
+            max_wind = 18 + phase * 4
+            for _ in range(min(14 + phase * 4, max_wind)):
                 self.env_ambient_particles.append(Particle(
                     WIDTH + random.uniform(0, 60),
                     random.uniform(30, HEIGHT - 60),
@@ -6819,18 +8225,178 @@ class Game:
                     (255, 240, 180), gravity=0.0,
                 ))
 
+        elif art == "void":
+            # Void: wisps of purple dust slowly spiral inward toward the boss
+            if self.boss and random.random() < rate * 0.55:
+                bx, by = self.boss.x, self.boss.y
+                ang  = random.uniform(0, math.tau)
+                dist = random.uniform(100, 280)
+                px   = bx + math.cos(ang) * dist
+                py   = by + math.sin(ang) * dist
+                spd  = random.uniform(20, 55)
+                self.env_ambient_particles.append(Particle(
+                    px, py,
+                    math.cos(ang + math.pi) * spd,
+                    math.sin(ang + math.pi) * spd,
+                    random.uniform(1.0, 2.2),
+                    random.uniform(1.5, 3.5),
+                    random.choice([(150, 70, 240), (90, 30, 180), (190, 130, 255)]),
+                    gravity=0.0,
+                ))
+
+        elif art == "tide":
+            # Tide: bubble motes drift upward from the bottom edge
+            if random.random() < rate * 0.65:
+                self.env_ambient_particles.append(Particle(
+                    random.uniform(0, WIDTH),
+                    HEIGHT + random.uniform(0, 8),
+                    random.uniform(-18, 18),
+                    random.uniform(-55, -22),
+                    random.uniform(1.2, 2.8),
+                    random.uniform(2, 5),
+                    random.choice([(70, 195, 255), (110, 225, 255), (190, 245, 255)]),
+                    gravity=-18.0,
+                ))
+
+        elif art == "chrono":
+            # Chrono: golden gear-mote sparks drift from boss in a slow spiral
+            if self.boss and random.random() < rate * 0.45:
+                bx, by = self.boss.x, self.boss.y
+                ang = random.uniform(0, math.tau)
+                spd = random.uniform(28, 75)
+                self.env_ambient_particles.append(Particle(
+                    bx, by,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.8, 1.8),
+                    random.uniform(1.5, 3),
+                    random.choice([(255, 200, 80), (255, 240, 160), (200, 140, 50)]),
+                    gravity=35.0,
+                ))
+
+        elif art == "rift":
+            # Rift: dark void-motes slide in from the sides as if pulled into tears
+            if random.random() < rate * 0.60:
+                py = random.uniform(0, HEIGHT)
+                vx = random.uniform(50, 120)
+                if random.random() < 0.5:
+                    # from left, moving right
+                    self.env_ambient_particles.append(Particle(
+                        random.uniform(-10, 0), py,
+                        vx, random.uniform(-12, 12),
+                        random.uniform(0.6, 1.4), random.uniform(1.5, 3.5),
+                        random.choice([(70, 25, 180), (110, 55, 220), (30, 10, 90)]),
+                        gravity=0.0,
+                    ))
+                else:
+                    # from right, moving left
+                    self.env_ambient_particles.append(Particle(
+                        random.uniform(WIDTH, WIDTH + 10), py,
+                        -vx, random.uniform(-12, 12),
+                        random.uniform(0.6, 1.4), random.uniform(1.5, 3.5),
+                        random.choice([(70, 25, 180), (110, 55, 220), (30, 10, 90)]),
+                        gravity=0.0,
+                    ))
+
+        elif art == "obsidian":
+            # Obsidian: dark crystal shards trickle down from the top
+            if random.random() < rate * 0.55:
+                self.env_ambient_particles.append(Particle(
+                    random.uniform(0, WIDTH),
+                    random.uniform(-8, 0),
+                    random.uniform(-22, 22),
+                    random.uniform(50, 130),
+                    random.uniform(1.0, 2.4),
+                    random.uniform(2, 5),
+                    random.choice([(110, 60, 175), (155, 105, 235), (70, 50, 120)]),
+                    gravity=55.0,
+                ))
+
+        elif art == "aurora":
+            # Aurora: soft ribbon wisps drift slowly downward in the upper half
+            if random.random() < rate * 0.50:
+                aurora_colors = [(132, 255, 232), (160, 120, 255),
+                                 (120, 200, 255), (80, 255, 180), (200, 160, 255)]
+                self.env_ambient_particles.append(Particle(
+                    random.uniform(0, WIDTH),
+                    random.uniform(0, HEIGHT * 0.45),
+                    random.uniform(-18, 18),
+                    random.uniform(14, 45),
+                    random.uniform(1.8, 4.0),
+                    random.uniform(4, 9),
+                    random.choice(aurora_colors),
+                    gravity=0.0,
+                ))
+
+        elif art == "prism":
+            # Prism: tiny rainbow sparkles scatter from the boss
+            if self.boss and random.random() < rate * 0.45:
+                rainbow = [(255, 80, 120), (255, 180, 40), (120, 255, 80),
+                           (60, 220, 255), (140, 80, 255), (255, 80, 220)]
+                bx, by = self.boss.x, self.boss.y
+                ang = random.uniform(0, math.tau)
+                spd = random.uniform(40, 110)
+                self.env_ambient_particles.append(Particle(
+                    bx, by,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.5, 1.2),
+                    random.uniform(1.5, 3.5),
+                    random.choice(rainbow),
+                    gravity=0.0,
+                ))
+
+        elif art == "aegis":
+            # Aegis: faint energy motes pulse outward from the boss in ring arcs
+            if self.boss and random.random() < rate * 0.40:
+                bx, by = self.boss.x, self.boss.y
+                ang = random.uniform(0, math.tau)
+                spd = random.uniform(35, 90)
+                self.env_ambient_particles.append(Particle(
+                    bx, by,
+                    math.cos(ang) * spd,
+                    math.sin(ang) * spd,
+                    random.uniform(0.6, 1.4),
+                    random.uniform(2, 4),
+                    random.choice([(180, 200, 255), (140, 170, 255), (220, 230, 255)]),
+                    gravity=0.0,
+                ))
+
+        elif art == "sentinel":
+            # Sentinel: cold scan-line particles sweep slowly left to right
+            if random.random() < rate * 0.45:
+                self.env_ambient_particles.append(Particle(
+                    random.uniform(-10, 0),
+                    random.uniform(0, HEIGHT),
+                    random.uniform(80, 200),
+                    random.uniform(-8, 8),
+                    random.uniform(0.3, 0.7),
+                    random.uniform(1, 2.5),
+                    random.choice([(200, 220, 255), (160, 200, 255), (230, 240, 255)]),
+                    gravity=0.0,
+                ))
+
     # ─────────────────────────────────────────────────────────────────────────
     # Boss environmental effects — draw (background layer and foreground)
     # ─────────────────────────────────────────────────────────────────────────
     def draw_boss_env_bg_layer(self, surf: pygame.Surface):
         """Draw env effects that sit between background and game objects."""
-        if not (self.boss_mode and self.boss and not self.boss.dying):
+        if not (self.boss_mode and self.boss):
             return
         spec = self.boss.spec()
         art = spec.get("art", "aegis")
         is_hell = spec.get("name") == "HELL"
         t = self.time_alive
         phase = self.boss.phase
+
+        if self.boss.dying:
+            progress = clamp(self.boss.death_timer / max(0.001, self.boss.death_duration), 0.0, 1.0)
+            cx = int(self.boss.x)
+            cy = int(self.boss.y)
+            death_bg = get_clear_surface((WIDTH, HEIGHT), ("boss_death_env_bg", art))
+            self._draw_boss_death_env(death_bg, spec, cx, cy, progress, t, foreground=False)
+            surf.blit(death_bg, (0, 0))
+            return
 
         # Darkness overlay (dims everything, boss+bullets drawn on top separately)
         if self.env_darkness > 0.02:
@@ -6906,6 +8472,15 @@ class Game:
         for p in self.env_ambient_particles:
             p.draw(surf)
 
+        if self.boss.dying:
+            progress = clamp(self.boss.death_timer / max(0.001, self.boss.death_duration), 0.0, 1.0)
+            cx = int(self.boss.x)
+            cy = int(self.boss.y)
+            death_fg = get_clear_surface((WIDTH, HEIGHT), ("boss_death_env_fg", art))
+            self._draw_boss_death_env(death_fg, spec, cx, cy, progress, t, foreground=True)
+            surf.blit(death_fg, (0, 0))
+            return
+
         # Lightning bolts
         if self.env_lightning_timer > 0 and self.env_lightning_bolts:
             bolt_alpha = int(clamp(self.env_lightning_timer / 0.22, 0.0, 1.0) * 255)
@@ -6920,16 +8495,18 @@ class Game:
                     pygame.draw.line(surf, (*core_color, bolt_alpha), p1, p2, 2)
 
             # If darkness was applied, re-draw boss and its bullets so they glow
-            if self.env_darkness > 0.05 and self.boss and not self.boss.dying:
+            if self.env_darkness > 0.05 and self.boss:
                 self.boss.draw(surf, self.font, self.current_difficulty())
                 for proj in self.projectiles:
-                    proj.draw(surf)
+                    if rect_intersects_view(proj.rect(), 120):
+                        proj.draw(surf)
 
         # If darkness overlay is active (non-lightning): re-draw boss+bullets so they shine through
-        elif self.env_darkness > 0.10 and self.boss and not self.boss.dying:
+        elif self.env_darkness > 0.10 and self.boss:
             self.boss.draw(surf, self.font, self.current_difficulty())
             for proj in self.projectiles:
-                proj.draw(surf)
+                if rect_intersects_view(proj.rect(), 120):
+                    proj.draw(surf)
 
         # Env flash
         if self.env_flash > 0.02:
@@ -6937,7 +8514,321 @@ class Game:
             alpha = int(self.env_flash * 140)
             surf.blit(self.get_overlay((WIDTH, HEIGHT), (r, g, b, alpha)), (0, 0))
 
+    def _draw_boss_death_env(self, surf: pygame.Surface, spec: dict, cx: int, cy: int, progress: float, t: float, foreground: bool):
+        """Shared cinematic death environment overlay for every boss."""
+        art = spec.get("art", "aegis")
+        accent = spec["accent"]
+        core = spec["core"]
+        dark = spec["dark"]
+        short = spec.get("short", "").upper()
+        phase = max(1, int(getattr(self.boss, "phase", 1)))
+        eased = ease_out_cubic(clamp(progress, 0.0, 1.0))
+        inv = 1.0 - eased
+        scale = 1.0 + 0.3 * inv
+
+        def a(col, alpha):
+            return (*col, max(0, min(255, int(alpha))))
+
+        def ring(count, base, step, width, color, wobble=0.0):
+            for i in range(count):
+                rr = int(base + i * step + math.sin(t * (2.2 + wobble) + i) * 6 * inv)
+                pygame.draw.circle(surf, a(color, 170 - i * 18), (cx, cy), rr, width if i < count - 2 else max(1, width - 1))
+
+        def ray(count, start_r, end_r, color, width=2, phase_mul=1.0, y_scale=0.72):
+            for i in range(count):
+                ang = t * phase_mul + i * (math.tau / count)
+                x1 = cx + int(math.cos(ang) * start_r)
+                y1 = cy + int(math.sin(ang) * start_r * y_scale)
+                x2 = cx + int(math.cos(ang) * (end_r + i * 3))
+                y2 = cy + int(math.sin(ang) * (end_r + i * 2) * y_scale)
+                pygame.draw.line(surf, a(color, 100 + int(90 * inv)), (x1, y1), (x2, y2), width)
+
+        def shard(count, inner, outer, size, color, y_scale=0.72):
+            for i in range(count):
+                ang = t * 2.8 + i * (math.tau / count)
+                dist = lerp(inner, outer, inv) + (i % 3) * 6
+                px = cx + int(math.cos(ang) * dist)
+                py = cy + int(math.sin(ang) * dist * y_scale)
+                s = size + (i % 4) * 2
+                pygame.draw.polygon(surf, a(color, 190 - i * 10), [(px, py - s), (px + s, py), (px, py + s), (px - s, py)])
+
+        if art in {"hell", "ember"}:
+            self.env_darkness = max(self.env_darkness, 0.72 + 0.18 * inv)
+            if foreground:
+                for i in range(18):
+                    x = (i * 58 + int(t * 180)) % (WIDTH + 120) - 60
+                    y = HEIGHT - 100 - int((i % 4) * 18 + 14 * math.sin(t * 4.0 + i))
+                    pygame.draw.circle(surf, a((255, 200, 70), 170), (x, y), 2 + (i % 2))
+                    pygame.draw.circle(surf, a((255, 120, 40), 120), (x, y), 5, 1)
+                for i in range(12):
+                    x = 40 + i * 84 + int(math.sin(t * 2.3 + i) * 14)
+                    pygame.draw.line(surf, a((255, 110, 40), 120), (x, HEIGHT - 6), (x + 18, HEIGHT - 140 - int(42 * inv)), 2)
+            else:
+                for i in range(5):
+                    pygame.draw.arc(surf, a((255, 126, 52), 130 - i * 12), (cx - 140 - i * 30, cy - 54 - i * 6, 280 + i * 60, 120 + i * 18), 0.18, 3.05, 3)
+                for i in range(4):
+                    y = HEIGHT - 96 - i * 18
+                    pygame.draw.line(surf, a((255, 60, 20), 120 - i * 12), (0, y), (WIDTH, y - int(18 * inv)), 2)
+            ring(4, 54, 34, 3, (255, 220, 150), 0.4)
+            ray(12 if foreground else 16, 24, 164, core, width=2, phase_mul=4.0, y_scale=0.66)
+            shard(10, 52, 170, 8, accent, 0.64)
+
+        elif art == "tempest":
+            self.env_darkness = max(self.env_darkness, 0.65 + 0.18 * inv)
+            if foreground:
+                if not self.env_lightning_bolts:
+                    self.env_lightning_bolts = [self._gen_lightning_bolt(0, 80 + i * 30, WIDTH, 72 + i * 34, jitter=22, segments=14) for i in range(3)]
+                self.env_lightning_timer = max(self.env_lightning_timer, 0.18 + 0.22 * inv)
+            else:
+                for i in range(7):
+                    y = 46 + i * 34 + int(math.sin(t * 5.0 + i) * 10)
+                    pygame.draw.arc(surf, a(core, 165 - i * 16), (-42, y, WIDTH + 84, 72), 0.1 + inv * 0.2, 2.8 + inv * 0.4, 4 if i % 2 == 0 else 3)
+                for i in range(18):
+                    xx = int((i * 66 + t * 220) % (WIDTH + 160) - 80)
+                    pygame.draw.line(surf, a((180, 220, 255), 80 + int(60 * inv)), (xx, 24 + (i % 4) * 18), (xx + 46, 92 + int(26 * inv)), 2)
+            ring(3, 60, 36, 2, accent, 0.8)
+            ray(18 if foreground else 12, 18, 210, core, width=2, phase_mul=7.0, y_scale=0.70)
+            shard(8, 80, 170, 8, core, 0.72)
+
+        elif art in {"void", "rift"}:
+            self.env_darkness = max(self.env_darkness, 0.88)
+            if foreground:
+                if art == "rift":
+                    self.env_lightning_timer = max(self.env_lightning_timer, 0.16 + 0.18 * inv)
+                    self.env_lightning_bolts = [self._gen_lightning_bolt(0, 100 + i * 82 + int(math.sin(t * 4.0 + i) * 18), WIDTH, 110 + i * 80, jitter=14, segments=18) for i in range(4)]
+                for i in range(22):
+                    ang = t * 3.6 + i * (math.tau / 22)
+                    dist = 52 + i * 10 + int(24 * inv)
+                    px = cx + int(math.cos(ang) * dist)
+                    py = cy + int(math.sin(ang) * dist * 0.70)
+                    pygame.draw.circle(surf, a((160, 80, 255) if art == "rift" else accent, 150), (px, py), 2)
+            else:
+                pygame.draw.circle(surf, a(dark, 220), (cx, cy), int(52 + 92 * inv), 0)
+                ring(5, 46, 28, 2, accent, 0.5)
+                for i in range(10):
+                    ang = t * 2.2 + i * (math.tau / 10)
+                    pts = []
+                    for j in range(8):
+                        tt = j / 7.0
+                        rr = 26 + tt * (170 + 36 * inv)
+                        ang2 = ang + tt * (0.8 + 0.6 * inv)
+                        pts.append((cx + int(math.cos(ang2) * rr), cy + int(math.sin(ang2) * rr * 0.72)))
+                    pygame.draw.lines(surf, a(core, 170), False, pts, 2)
+                    if art == "rift":
+                        pygame.draw.line(surf, a(accent, 150), pts[0], pts[-1], 1)
+            ray(14, 24, 176, core if art == "void" else accent, width=1, phase_mul=1.8, y_scale=0.72)
+
+        elif art == "chrono":
+            self.env_darkness = max(self.env_darkness, 0.45 + 0.12 * inv)
+            if foreground:
+                for i in range(12):
+                    ang = t * 4.0 + i * (math.tau / 12)
+                    px = cx + int(math.cos(ang) * (40 + i * 10))
+                    py = cy + int(math.sin(ang) * (40 + i * 8) * 0.72)
+                    pygame.draw.line(surf, a(core, 190), (cx, cy), (px, py), 2)
+                for i in range(10):
+                    x = 74 + i * 46 + int(math.sin(t * 8.0 + i) * 6)
+                    pygame.draw.line(surf, a(accent, 130), (x, 52), (x, HEIGHT - 52), 1)
+            else:
+                ring(3, 54, 30, 3, accent, 0.2)
+                ring(2, 112, 40, 2, core, 0.2)
+                ray(12, 30, 160, core, width=2, phase_mul=2.8, y_scale=0.70)
+                for i in range(12):
+                    x = 78 + i * 32
+                    y = 86 + int(math.sin(t * 5.0 + i) * 7)
+                    pygame.draw.rect(surf, a(dark, 130), (x, y, 16, 80), border_radius=4)
+                    pygame.draw.rect(surf, a(accent, 160), (x + 4, y + 10, 8, 18), border_radius=2)
+            shard(8, 44, 152, 7, accent, 0.72)
+
+        elif art in {"prism", "nova", "stellar"}:
+            if art == "prism":
+                self.env_flash_color = (255, 255, 255)
+                if foreground:
+                    colors = [(255, 90, 180), (255, 170, 70), (120, 255, 120), (80, 210, 255), (180, 120, 255)]
+                    for i, col in enumerate(colors):
+                        ray(4, 28 + i * 4, 220 + i * 18, col, width=3 if i == 0 else 2, phase_mul=1.5 + i * 0.08, y_scale=0.68)
+                    for i in range(18):
+                        px = (i * 69 + int(t * 160)) % (WIDTH + 140) - 70
+                        pygame.draw.line(surf, a(colors[i % len(colors)], 120), (px, 34), (px + 48, HEIGHT - 36), 2)
+                else:
+                    ring(4, 52, 34, 3, core, 0.1)
+                    ring(3, 108, 44, 2, accent, 0.2)
+                    ray(16, 24, 170, core, width=2, phase_mul=3.2, y_scale=0.72)
+                shard(12, 62, 194, 10, accent, 0.72)
+            else:
+                self.env_flash_color = (255, 240, 150)
+                if foreground:
+                    for i in range(16):
+                        ang = t * 3.8 + i * (math.tau / 16)
+                        dist = 48 + i * 10 + int(30 * inv)
+                        px = cx + int(math.cos(ang) * dist)
+                        py = cy + int(math.sin(ang) * dist * 0.72)
+                        pygame.draw.circle(surf, a(core, 170), (px, py), 2 + (i % 2))
+                    ray(10, 34, 210, accent if art == "nova" else core, width=2, phase_mul=4.4, y_scale=0.72)
+                else:
+                    ring(4, 60, 38, 3, accent, 0.15)
+                    ray(20 if art == "nova" else 14, 20, 190, core, width=2, phase_mul=2.4, y_scale=0.68)
+                shard(14 if art == "nova" else 10, 60, 180, 8, accent, 0.72)
+                if art == "stellar":
+                    for i in range(8):
+                        ang = t * 1.7 + i * (math.tau / 8)
+                        x1 = cx + int(math.cos(ang) * 22)
+                        y1 = cy + int(math.sin(ang) * 22 * 0.72)
+                        x2 = cx + int(math.cos(ang) * (190 + i * 5))
+                        y2 = cy + int(math.sin(ang) * (140 + i * 4) * 0.72)
+                        pygame.draw.line(surf, a(core, 120), (x1, y1), (x2, y2), 2)
+
+        elif art in {"bloom", "thorn"}:
+            self.env_darkness = max(self.env_darkness, 0.34)
+            petals = 14 if art == "bloom" else 12
+            leaf_colors = [(120, 255, 150), (180, 255, 170), (220, 255, 210), (110, 200, 110)]
+            if foreground:
+                for i in range(petals):
+                    ang = t * (0.6 if art == "bloom" else 0.9) + i * (math.tau / petals)
+                    dist = 42 + i * 11 + int(20 * inv)
+                    px = cx + int(math.cos(ang) * dist)
+                    py = cy + int(math.sin(ang) * dist * 0.78)
+                    color = leaf_colors[i % len(leaf_colors)]
+                    pts = [(px, py - 10), (px + 8, py - 2), (px + 4, py + 10), (px - 4, py + 10), (px - 8, py - 2)]
+                    pygame.draw.polygon(surf, a(color, 160), pts)
+                for i in range(18):
+                    x = (i * 52 + int(t * 130)) % (WIDTH + 120) - 60
+                    y = HEIGHT - 110 - int(16 * math.sin(t * 2.0 + i))
+                    pygame.draw.circle(surf, a((210, 255, 190), 120), (x, y), 2)
+            else:
+                ring(4, 52, 28, 2, (160, 255, 160), 0.4)
+                ray(12, 22, 150, accent, width=2, phase_mul=2.6, y_scale=0.76)
+                for i in range(14):
+                    ang = t * 1.2 + i * (math.tau / 14)
+                    x1 = cx + int(math.cos(ang) * 20)
+                    y1 = cy + int(math.sin(ang) * 16)
+                    x2 = cx + int(math.cos(ang) * (160 + i * 6))
+                    y2 = cy + int(math.sin(ang) * (100 + i * 4) * 0.76)
+                    pygame.draw.line(surf, a((100, 220, 120), 120), (x1, y1), (x2, y2), 2)
+            shard(10, 36, 130, 6, accent, 0.78)
+
+        elif art == "tide":
+            self.env_darkness = max(self.env_darkness, 0.46 + 0.10 * inv)
+            if foreground:
+                wave = get_clear_surface((WIDTH, HEIGHT // 2), ("boss_death_wave", art, foreground))
+                for i in range(6):
+                    amp = 12 + i * 4
+                    y = HEIGHT // 2 + 22 + int(math.sin(t * (2.2 + i * 0.2)) * amp)
+                    pygame.draw.arc(wave, a((60, 180, 255), 48 - i * 5), (-30, y - 28, WIDTH + 60, 72), 0, math.pi, 3)
+                surf.blit(wave, (0, HEIGHT // 2 - 12))
+                for i in range(20):
+                    x = (i * 54 + int(t * 180)) % (WIDTH + 100) - 50
+                    pygame.draw.circle(surf, a((220, 250, 255), 130), (x, HEIGHT - 88 - int(18 * math.sin(t * 4.2 + i))), 2)
+            else:
+                ring(3, 52, 34, 2, (110, 220, 255), 0.2)
+                ray(12, 18, 170, accent, width=2, phase_mul=1.9, y_scale=0.72)
+                for i in range(7):
+                    yy = HEIGHT - 132 - i * 20 + int(math.sin(t * 3.0 + i) * 8)
+                    pygame.draw.arc(surf, a(core, 150 - i * 12), (-20, yy, WIDTH + 40, 84), 0.1, math.pi - 0.1, 3)
+            shard(10, 46, 150, 6, core, 0.74)
+
+        elif art == "frost":
+            self.env_darkness = max(self.env_darkness, 0.62 + 0.10 * inv)
+            if foreground:
+                for i in range(20):
+                    ang = t * 3.0 + i * (math.tau / 20)
+                    dist = 34 + i * 9 + int(26 * inv)
+                    px = cx + int(math.cos(ang) * dist)
+                    py = cy + int(math.sin(ang) * dist * 0.72)
+                    pygame.draw.polygon(surf, a((240, 252, 255), 180 - i * 6), [(px, py - 8), (px + 8, py), (px, py + 8), (px - 8, py)])
+                for i in range(18):
+                    x = (i * 58 + int(t * 160)) % (WIDTH + 120) - 60
+                    pygame.draw.line(surf, a((220, 245, 255), 120), (x, 40), (x + 32, HEIGHT - 40), 2)
+            else:
+                ring(4, 44, 28, 2, (190, 235, 255), 0.2)
+                ray(16, 22, 180, core, width=2, phase_mul=2.4, y_scale=0.72)
+                for i in range(12):
+                    x = 50 + i * 34
+                    pygame.draw.line(surf, a((220, 245, 255), 130), (x, 66), (x + 10, HEIGHT - 68), 2)
+            shard(16, 50, 190, 8, accent, 0.72)
+
+        elif art == "aurora":
+            self.env_darkness = max(self.env_darkness, 0.26 + 0.10 * inv)
+            colors = [(132, 255, 232), (160, 120, 255), (120, 210, 255), (255, 255, 255)]
+            if foreground:
+                for ci, col in enumerate(colors[:3]):
+                    for x in range(0, WIDTH + 16, 8):
+                        yy = HEIGHT // 3 + int(math.sin(x * 0.012 + t * (1.2 + ci * 0.12) + ci * 1.7) * (28 + ci * 12))
+                        pygame.draw.circle(surf, a(col, 36 + ci * 8), (x - 8, yy), 3 + ci)
+                for i in range(12):
+                    ang = t * 2.0 + i * (math.tau / 12)
+                    px = cx + int(math.cos(ang) * (50 + i * 11))
+                    py = cy + int(math.sin(ang) * (34 + i * 8) * 0.76)
+                    pygame.draw.circle(surf, a(core, 150), (px, py), 2)
+            else:
+                ring(4, 46, 30, 2, accent, 0.25)
+                ray(10, 24, 164, core, width=2, phase_mul=2.1, y_scale=0.76)
+                for i in range(6):
+                    x = 60 + i * 84 + int(math.sin(t * 2.0 + i) * 10)
+                    pygame.draw.arc(surf, a(colors[i % 3], 80), (x, 40 + i * 12, 170, 150), 0.2, 2.8, 4)
+            shard(8, 48, 150, 6, accent, 0.78)
+
+        elif art == "obsidian":
+            self.env_darkness = max(self.env_darkness, 0.90)
+            if foreground:
+                for i in range(20):
+                    x = (i * 68 + int(t * 170)) % (WIDTH + 160) - 80
+                    y = 40 + (i % 5) * 16 + int(math.sin(t * 5.8 + i) * 6)
+                    pygame.draw.line(surf, a((180, 130, 255), 120), (x, y), (x + 20, y + 52), 2)
+                    pygame.draw.line(surf, a((30, 20, 45), 170), (x + 4, y), (x + 18, y + 48), 1)
+            else:
+                pygame.draw.circle(surf, a(dark, 230), (cx, cy), int(34 + 78 * inv), 0)
+                ring(5, 42, 30, 2, accent, 0.2)
+                shard(18, 34, 190, 8, accent, 0.72)
+                for i in range(6):
+                    pygame.draw.line(surf, a(core, 100), (cx - 180 + i * 72, 66), (cx + 160 - i * 72, HEIGHT - 62), 2)
+
+        elif art == "sentinel":
+            self.env_darkness = max(self.env_darkness, 0.40 + 0.08 * inv)
+            if foreground:
+                for i in range(16):
+                    y = 54 + i * 24 + int(math.sin(t * 5.0 + i) * 6)
+                    pygame.draw.line(surf, a((220, 230, 255), 120), (64, y), (WIDTH - 64, y), 1)
+                for i in range(10):
+                    x = 72 + i * 84
+                    pygame.draw.rect(surf, a((180, 210, 255), 150), (x, HEIGHT - 110, 18, 34), border_radius=4)
+            else:
+                ring(4, 50, 30, 2, core, 0.2)
+                ray(12, 22, 170, accent, width=2, phase_mul=2.4, y_scale=0.72)
+                for i in range(8):
+                    x = 86 + i * 54 + int(math.sin(t * 3.8 + i) * 6)
+                    pygame.draw.rect(surf, a((210, 220, 255), 120), (x, 76, 12, 150), border_radius=3)
+                    pygame.draw.rect(surf, a(accent, 160), (x + 3, 88, 6, 26), border_radius=2)
+            shard(8, 42, 150, 7, core, 0.72)
+
+        else:  # fallback / aegis
+            self.env_darkness = max(self.env_darkness, 0.52 + 0.10 * inv)
+            if foreground:
+                for i in range(10):
+                    ang = t * 4.0 + i * (math.tau / 10)
+                    px = cx + int(math.cos(ang) * (28 + i * 10))
+                    py = cy + int(math.sin(ang) * (20 + i * 8) * 0.72)
+                    pygame.draw.circle(surf, a(core, 170), (px, py), 2)
+                for i in range(6):
+                    x = 64 + i * 104
+                    pygame.draw.line(surf, a(accent, 130), (x, 44), (x, HEIGHT - 44), 2)
+            else:
+                ring(4, 46, 28, 3, accent, 0.25)
+                ring(2, 120, 42, 2, core, 0.25)
+                ray(14, 24, 180, core, width=2, phase_mul=3.1, y_scale=0.68)
+                for i in range(12):
+                    x = 56 + i * 70
+                    pygame.draw.rect(surf, a(dark, 110), (x, 86, 26, 58), border_radius=6)
+                    pygame.draw.rect(surf, a(accent, 180), (x + 7, 94, 12, 20), border_radius=4)
+            shard(10, 48, 150, 7, accent, 0.72)
+
+        # Shared cinematic center pulse for all death states.
+        pulse_alpha = int(120 * inv * (0.85 + 0.15 * math.sin(t * 10.0)))
+        pygame.draw.circle(surf, a((255, 255, 255), pulse_alpha), (cx, cy), int(18 + 20 * inv), 2)
+        pygame.draw.circle(surf, a(accent if foreground else core, 60 + int(40 * inv)), (cx, cy), int(56 + 54 * scale), 1)
+
     def update_play(self, dt: float):
+        _profile_t0 = time.perf_counter() if self.profile_enabled else None
         difficulty = self.current_difficulty()
         self.time_alive += dt
         if self.boss_entry_fade > 0:
@@ -6953,6 +8844,9 @@ class Game:
             for p in self.particles:
                 p.update(dt)
             retain_positive_life(self.particles)
+            for p in self.env_ambient_particles:
+                p.update(dt)
+            retain_positive_life(self.env_ambient_particles)
             for t in self.texts:
                 t.update(dt)
             retain_positive_life(self.texts)
@@ -6961,6 +8855,11 @@ class Game:
             retain_clouds(self.clouds)
             while len(self.clouds) < 7:
                 self.clouds.append(Cloud(WIDTH + random.uniform(0, 160), random.uniform(40, 260), random.uniform(0.6, 1.4), random.uniform(8, 22), random.randint(0, 2)))
+            self.env_flash = max(0.0, self.env_flash - dt * 2.0)
+            self.env_darkness = max(0.0, self.env_darkness - dt * 0.6)
+            self.env_lightning_timer = max(0.0, self.env_lightning_timer - dt * 1.2)
+            if self.env_lightning_timer <= 0.0:
+                self.env_lightning_bolts.clear()
             self.ambient_timer += dt
             self.message_timer = max(0.0, self.message_timer - dt)
             self.screen_shake = max(0.0, self.screen_shake - dt)
@@ -6972,7 +8871,7 @@ class Game:
                 self.save_settings()
             return
 
-        gravity_scale = 0.90 if self.active_effects["boost"] > 0 else 1.0
+        gravity_scale = 1.0
         self.bird.update(dt, difficulty, gravity_scale=gravity_scale)
         if self.bird.y < 0 or self.bird.y > HEIGHT - 40:
             self.hit_bird()
@@ -7021,28 +8920,40 @@ class Game:
         retain_positive_life(self.texts)
 
         if self.boss_mode and self.boss:
-            self.boss.update(pipe_dt, difficulty, self.pipes, self.projectiles, self.orbs, self.score)
-            if self.boss.phase_changed and not self.boss.dying:
-                spec = self.boss.spec()
-                for _ in range(18 + self.boss.phase * 8):
-                    ang = random.uniform(0, math.tau)
-                    spd = random.uniform(90, 240) + self.boss.phase * 18
+            boss = self.boss
+            boss.update(pipe_dt, difficulty, self.pipes, self.projectiles, self.orbs, self.score)
+            if boss.phase_changed and not boss.dying:
+                spec = boss.spec()
+                boss_phase = boss.phase
+                boss_x = boss.x
+                boss_y = boss.y
+                accent = spec["accent"]
+                core = spec["core"]
+                rand_uniform = random.uniform
+                sin = math.sin
+                cos = math.cos
+                tau = math.tau
+                for _ in range(18 + boss_phase * 8):
+                    ang = rand_uniform(0, tau)
+                    spd = rand_uniform(90, 240) + boss_phase * 18
                     self.add_particle(
-                        self.boss.x,
-                        self.boss.y,
-                        math.cos(ang) * spd,
-                        math.sin(ang) * spd - random.uniform(30, 90),
-                        random.uniform(0.35, 0.95),
-                        random.uniform(2.0, 4.6),
-                        spec["accent"],
+                        boss_x,
+                        boss_y,
+                        cos(ang) * spd,
+                        sin(ang) * spd - rand_uniform(30, 90),
+                        rand_uniform(0.35, 0.95),
+                        rand_uniform(2.0, 4.6),
+                        accent,
                         gravity=120.0,
                     )
-                self.add_burst(self.boss.x, self.boss.y, spec["core"], amount=14 + self.boss.phase * 4, speed=260)
-                self.screen_shake = max(self.screen_shake, 0.22 + 0.06 * self.boss.phase)
-                self.flash = max(self.flash, 0.10 + 0.02 * self.boss.phase)
+                self.add_burst(boss_x, boss_y, core, amount=14 + boss_phase * 4, speed=260)
+                self.screen_shake = max(self.screen_shake, 0.22 + 0.06 * boss_phase)
+                self.flash = max(self.flash, 0.10 + 0.02 * boss_phase)
                 self.boss_hit_flash = max(self.boss_hit_flash, 0.16)
-                self.add_text(f"PHASE {self.boss.phase}", self.boss.x, self.boss.y - 92, spec["accent"])
-            self.boss.phase_changed = False
+                self.add_text(f"PHASE {boss_phase}", boss_x, boss_y - 92, accent)
+                self.sounds.play(f"boss_phase_{spec['short'].lower()}")
+                self._spawn_phase_env_burst(spec, boss_phase)
+            boss.phase_changed = False
             if self.boss_intro > 0:
                 self.boss_intro = max(0.0, self.boss_intro - dt)
                 if self.boss_intro <= 0:
@@ -7058,21 +8969,29 @@ class Game:
 
         # Cache bird rect once for collision checks
         bird_rect = self.bird.rect()
+        bird_cx = bird_rect.centerx
+        bird_cy = bird_rect.centery
+        bird_half_w = bird_rect.width * 0.5 + 34
+        bird_half_h = bird_rect.height * 0.5 + 34
         magnet_on = self.active_effects["magnet"] > 0
+        magnet_axis_limit = 96 if not magnet_on else MAGNET_RANGE + 40
+        magnet_range2 = MAGNET_RANGE * MAGNET_RANGE
         for orb in self.orbs:
             if not orb.active:
                 continue
+            dx = orb.x - bird_cx
+            dy = orb.y - bird_cy
+            if abs(dx) > magnet_axis_limit or abs(dy) > magnet_axis_limit:
+                continue
             if magnet_on:
-                dx = self.bird.x - orb.x
-                dy = self.bird.y - orb.y
                 dist2 = dx * dx + dy * dy
-                if dist2 < 250 * 250 and dist2 > 1:
-                    # Use math.hypot for faster distance calculation
+                if 1 < dist2 < magnet_range2:
                     dist = math.hypot(dx, dy)
-                    strength = clamp(320 + (250 - dist) * 3.4, 160, 560)
-                    orb.x += (dx / dist) * strength * dt
-                    orb.y += (dy / dist) * strength * dt * 0.92
-            if bird_rect.colliderect(orb.rect()):
+                    strength = clamp(300 + (MAGNET_RANGE - dist) * 2.6, 150, 520)
+                    orb.x -= (dx / dist) * strength * dt
+                    orb.y -= (dy / dist) * strength * dt * 0.92
+            orb_rect = orb.rect()
+            if bird_rect.colliderect(orb_rect):
                 orb.active = False
                 self.spawn_item_fx(orb.kind, orb.x, orb.y, collected=True)
                 self.apply_item(orb.kind, orb.x, orb.y)
@@ -7080,6 +8999,8 @@ class Game:
         # Reuse cached bird_rect for projectile collision
         if self.bird.invuln <= 0:
             for proj in self.projectiles:
+                if abs(proj.x - bird_cx) > bird_half_w + proj.radius + 18 or abs(proj.y - bird_cy) > bird_half_h + proj.radius + 18:
+                    continue
                 if bird_rect.colliderect(proj.rect()):
                     if self.hit_bird():
                         break
@@ -7089,18 +9010,19 @@ class Game:
         for pipe in self.pipes:
             if not pipe.scored and pipe.x + pipe.width < self.bird.x:
                 pipe.scored = True
-                self.score += 1
-                self.coins += 1
-                self.profile_totals["coins_collected"] = int(self.profile_totals.get("coins_collected", 0)) + 1
+                reward = self.item_multiplier()
+                self.score += reward
+                self.coins += reward
+                self.profile_totals["coins_collected"] = int(self.profile_totals.get("coins_collected", 0)) + reward
                 self.profile_totals["pipes_scored"] = int(self.profile_totals.get("pipes_scored", 0)) + 1
-                self.profile_totals["score_total"] = int(self.profile_totals.get("score_total", 0)) + 1
-                self.run_stats["coins_earned"] += 1
+                self.profile_totals["score_total"] = int(self.profile_totals.get("score_total", 0)) + reward
+                self.run_stats["coins_earned"] += reward
                 self.run_stats["pipes_scored"] += 1
                 self.combo += 1
                 self.run_stats["best_combo"] = max(int(self.run_stats.get("best_combo", 0)), int(self.combo))
                 self.set_best_score(self.score)
                 self.sounds.play("score")
-                self.add_text("+1", self.bird.x + 10, self.bird.y - 24, (255, 255, 255))
+                self.add_text(f"+{reward}", self.bird.x + 10, self.bird.y - 24, (255, 255, 255))
                 self.save_settings()
                 self.evaluate_meta(award_rewards=True)
                 self.add_burst(pipe.x + pipe.width, pipe.gap_y, self.bird.skin().accent, amount=8, speed=150)
@@ -7120,6 +9042,9 @@ class Game:
         self.boss_hit_flash = max(0.0, self.boss_hit_flash - dt)
         if self.evaluate_meta(award_rewards=True):
             self.save_settings()
+        if _profile_t0 is not None:
+            self.profile_stats["update_play"] += time.perf_counter() - _profile_t0
+            self.profile_frames += 1
 
     def draw_background(self, surf: pygame.Surface, boss_preview_index: Optional[int] = None):
         t = self.time_alive * 0.9 + self.menu_scroll
@@ -7134,6 +9059,10 @@ class Game:
             return
 
         theme = self.current_theme()
+        if self.profile_enabled and self.profile_frames >= 30:
+            avg_up = (self.profile_stats["update_play"] / self.profile_frames) * 1000.0
+            avg_dr = (self.profile_stats["draw_play"] / self.profile_frames) * 1000.0
+            draw_text(surf, self.font_small, f"PROFILE {avg_up:0.2f} / {avg_dr:0.2f} ms", (WIDTH - 18, 14), (255, 220, 140), align="right", shadow=False)
         scene = self.arcade_bg_cache[theme["name"]]
         surf.blit(scene["base"], (0, 0))
         surf.blit(scene["static"], (0, 0))
@@ -7271,8 +9200,6 @@ class Game:
         pygame.draw.rect(surf, pipe_dark, (0, HEIGHT - 14, WIDTH, 14))
         pygame.draw.rect(surf, pipe, (0, HEIGHT - 14, WIDTH, 4))
 
-
-
     def draw_ui(self, surf: pygame.Surface):
         theme = self.current_theme()
         draw_text(surf, self.font_big, self.current_mode.title(), (20, 14), WHITE)
@@ -7293,15 +9220,13 @@ class Game:
         effect_rows = []
         effect_labels = {
             "magnet": "MAGNET",
-            "boost": "BOOST",
             "multiplier": "X2",
         }
         effect_colors = {
             "magnet": (255, 120, 120),
-            "boost": (160, 255, 180),
             "multiplier": (255, 175, 255),
         }
-        for key in ("magnet", "boost", "multiplier"):
+        for key in ("magnet", "multiplier"):
             remaining = float(self.active_effects.get(key, 0.0))
             if remaining > 0:
                 effect_rows.append((effect_labels[key], remaining, effect_colors[key]))
@@ -7309,8 +9234,6 @@ class Game:
             effect_rows.append(("SHIELD", self.bird.shield, (120, 240, 255)))
         if self.bird.invuln > 0:
             effect_rows.append(("INVULN", self.bird.invuln, (255, 255, 255)))
-        if self.bird.revives > 0:
-            effect_rows.append((f"REVIVE X{self.bird.revives}", None, (255, 210, 120)))
         if effect_rows:
             start_x = 18
             start_y = HEIGHT - 58 - (len(effect_rows) - 1) * 16
@@ -7393,6 +9316,10 @@ class Game:
         surf.blit(overlay, (0, 0))
 
     def draw_pipes_orbs_projectiles(self, surf: pygame.Surface):
+        # Early exit if nothing to draw
+        if not self.pipes and not self.orbs and not self.projectiles:
+            return
+        
         theme = self.current_theme()
         pulse = 0.5 + 0.5 * math.sin(self.time_alive * 4.0)
         boss_active = self.boss_mode and self.boss is not None
@@ -7402,6 +9329,8 @@ class Game:
         ring_alpha = int(100 + 90 * pulse)
 
         for pipe in self.pipes:
+            if pipe.x > WIDTH + 110 or pipe.x + pipe.width < -110:
+                continue
             pipe.draw(surf, theme, pulse=pulse, boss_spec=boss_spec, boss_phase=boss_phase, boss_timer=boss_timer)
             if boss_active and self.boss.hp > 0:
                 gap = pipe.gap_rect()
@@ -7419,8 +9348,12 @@ class Game:
 
         bird_skin = self.bird.skin()
         for orb in self.orbs:
+            if orb.x < -96 or orb.x > WIDTH + 96 or orb.y < -96 or orb.y > HEIGHT + 96:
+                continue
             orb.draw(surf, bird_skin)
         for proj in self.projectiles:
+            if proj.x < -120 or proj.x > WIDTH + 120 or proj.y < -120 or proj.y > HEIGHT + 120:
+                continue
             proj.draw(surf)
 
     def draw_particles(self, surf: pygame.Surface):
@@ -7431,8 +9364,8 @@ class Game:
         for t in self.texts:
             t.draw(surf, self.font)
 
-
     def draw_play(self):
+        _profile_t0 = time.perf_counter() if self.profile_enabled else None
         surf = self.screen
         self.draw_background(surf)
         # ── Boss environment background layer ─────────────────────────────────
@@ -7450,7 +9383,8 @@ class Game:
                 or self.env_darkness > 0.10
             )
         )
-        if self.boss_mode and self.boss and not boss_needs_env_redraw:
+        # Always draw boss (including death animation) unless env redraw is needed
+        if self.boss_mode and self.boss and (not boss_needs_env_redraw or self.boss.dying):
             self.boss.draw(surf, self.font, self.current_difficulty())
 
         self.draw_particles(surf)
@@ -7460,7 +9394,7 @@ class Game:
         # ─────────────────────────────────────────────────────────────────────
         self.draw_hitboxes_overlay(surf)
         # Boss entry fade: darkens game world only; boss description panel (drawn in draw_ui) is unaffected.
-        if self.boss_mode and self.boss_entry_fade > 0:
+        if self.boss_entry_fade > 0:
             alpha = int(255 * self.boss_entry_fade / max(0.001, self.boss_entry_fade_total))
             self._boss_entry_fade_surf.set_alpha(alpha)
             surf.blit(self._boss_entry_fade_surf, (0, 0))
@@ -7501,6 +9435,8 @@ class Game:
             self.screen.blit(surf, offset)
         else:
             self.screen.blit(surf, (0, 0))
+        if _profile_t0 is not None:
+            self.profile_stats["draw_play"] += time.perf_counter() - _profile_t0
 
     def draw_menu(self):
         surf = self.screen
@@ -8898,7 +10834,9 @@ class Game:
     def main_loop(self):
         self.reset_world()
         while self.running:
-            dt = min(self.clock.tick(FPS) / 1000.0, 1.0 / 45.0)
+            # Cap dt to prevent spiral of death during lag spikes
+            raw_dt = self.clock.tick(FPS)
+            dt = min(raw_dt / 1000.0, 1.0 / 30.0)  # Cap at 30fps equivalent
             if self.state == "PLAY" and hasattr(self, "time_scale"):
                 dt *= self.time_scale
 
@@ -9003,6 +10941,7 @@ class Game:
             elif self.state == "PLAY":
                 self.update_play(dt)
                 self.draw_play()
+                self.frame_count += 1  # Track frames for caching
             elif self.state == "PAUSE":
                 self.draw_pause()
             elif self.state == "GAME_OVER":
@@ -9016,7 +10955,7 @@ class Game:
             if grect.size == self.screen.get_size():
                 self._window.blit(self.screen, grect.topleft)
             else:
-                scaled = pygame.transform.scale(self.screen, grect.size)
+                scaled = pygame.transform.smoothscale(self.screen, grect.size)
                 self._window.blit(scaled, grect.topleft)
             pygame.display.flip()
 
