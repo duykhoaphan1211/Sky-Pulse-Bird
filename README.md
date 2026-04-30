@@ -18,87 +18,66 @@ Need 2 dependence libraries: [**Pygame-ce**](https://pypi.org/project/pygame-ce/
 - Open it by double left-click or right-click, then go to "Open with" and select **"Python"** software.
 - Play the game!
 
-# Sky Pulse Bird - Beginner Guide (by ChatGPT)
+# Sky Pulse Bird
 
-**Sky Pulse Bird** is a polished, save-based flappy-style arcade game built around simple one-button flight, fast reaction timing, unlockable skins, daily and weekly quests, achievements, and dramatic boss battles. It is designed to feel easy to understand at first glance, but surprisingly deep once you start chasing higher scores, completing quests, and mastering different difficulties.
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.14.4-blue">
+  <img alt="pygame-ce" src="https://img.shields.io/badge/pygame--ce-compatible-2ea44f">
+  <img alt="numpy" src="https://img.shields.io/badge/numpy-used-4d77cf">
+  <img alt="Mode" src="https://img.shields.io/badge/Arcade%20%2B%20Boss%20%2B%20HELL-3%20modes-ff8c42">
+  <img alt="Resolution" src="https://img.shields.io/badge/960×540-60%20FPS-8a63d2">
+</p>
 
----
-
-## Game Overview
-
-| Topic | Details |
-|---|---|
-| Genre | Arcade / flappy-style action game |
-| Core idea | Keep the bird in the air, pass pipes, survive as long as possible, and progress through unlocks and challenges |
-| Main focus | Timing, control, consistency, and progression |
-| Progression style | Persistent save file with coins, skins, stats, quests, and achievements |
-| Replay value | High, thanks to multiple modes, difficulties, bosses, and long-term goals |
+<p align="center">
+  <b>Sky Pulse Bird</b> is a fast-paced 2D flight game with dodge-based gameplay, skins, items, quests, achievements, boss fights, and persistent progression.
+</p>
 
 ---
 
-## First Things to Know
+## Table of Contents
 
-| Topic | Details |
-|---|---|
-| This is not just a simple flappy clone | The game adds modern UI, multiple difficulty levels, item systems, boss fights, cosmetic skins, and progression systems |
-| You do not need prior experience | The game is easy to learn from the first run |
-| Most progress is permanent | Coins, unlocked skins, stats, quest completion, and achievements are saved |
-| Skills matter more than luck | Good rhythm and stable tapping are more important than random improvisation |
-| Boss fights are a separate challenge | Boss Mode is not just “more pipes”; it is a distinct mode with its own structure |
+- [Overview](#overview)
+- [Controls](#controls)
+- [Game Modes](#game-modes)
+- [Difficulty](#difficulty)
+- [Items & Power-Ups](#items--power-ups)
+- [Skins](#skins)
+- [Bosses](#bosses)
+- [Quests & Achievements](#quests--achievements)
+- [Progression & Save Data](#progression--save-data)
+- [Tips for New Players](#tips-for-new-players)
+- [Installation & Run](#installation--run)
 
 ---
 
-## Core Gameplay Loop
+## Overview
 
-| Step | What Happens |
+Sky Pulse Bird is a compact but content-rich arcade flight game focused on timing, reflexes, and progression. You control a bird, avoid pipes, collect items, survive as long as possible, and challenge bosses in a separate battle mode. The game includes multiple visual themes, unlockable skins, daily and weekly quests, achievements, and automatic save support.
+
+### Key Features
+
+| Feature | Description |
 |---|---|
-| 1. Start a run | Choose a mode and difficulty |
-| 2. Control the bird | Use a flap input to keep flying |
-| 3. Avoid obstacles | Pipes and boss attacks punish poor timing |
-| 4. Score points | Passing pipes increases your score |
-| 5. Earn coins | Score and item collection help you accumulate currency |
-| 6. Unlock rewards | Use coins to buy skins and progress through the game’s meta systems |
-| 7. Repeat better | Learn patterns, improve timing, and push for higher scores |
+| Core gameplay | Fly, dodge pipes, collect coins and items, and keep your rhythm stable |
+| Game modes | Arcade and Boss |
+| Difficulty levels | Easy, Normal, Hard, Insane |
+| Progression | Coins, skin unlocks, quests, achievements, best scores |
+| Boss fights | Multi-phase bosses with unique projectile patterns and effects |
+| Visuals | Animated backgrounds, theme variation, polished FX |
+| Save system | Automatic saving for progress, skins, quests, achievements, and scores |
 
 ---
 
 ## Controls
 
-| Input | Action |
+| Action | Key / Input |
 |---|---|
-| **Space** | Flap / jump |
-| **Up Arrow** | Flap / jump |
-| **W** | Flap / jump |
-| **Left Click** | Flap / jump |
-| **P** | Pause / resume |
-| **Esc** | Pause, resume, or return to menu depending on the screen |
-| **R** | Restart the current run |
-| **M** | Toggle sound on/off |
-| **H** | Toggle hitbox display |
-
-| Beginner note | Details |
-|---|---|
-| Main control | The game is built around very simple flight timing |
-| Best habit | Use short, controlled taps rather than panic-spamming |
-| Important skill | Learning when **not** to flap is just as important as flapping itself |
-
----
-
-## Main Menu Structure
-
-| Menu | Purpose |
-|---|---|
-| **Play** | Starts a run and opens the mode selection flow |
-| **Skins** | Lets you browse, equip, and buy bird skins |
-| **Profile** | Shows stats, quests, and achievements |
-| **Options** | Changes audio and other settings |
-| **Quit** | Closes the game |
-
-| Play submenu | Description |
-|---|---|
-| **Arcade** | Standard survival mode |
-| **Boss** | Boss-fight mode with difficulty and boss selection |
-| **HELL** | Extreme preset leading to the hardest boss experience |
+| Flap / fly upward | `Space` / `Up Arrow` / Mouse Click |
+| Confirm / select | `Enter` |
+| Back / cancel | `Esc` |
+| Navigate menus | `Arrow Keys` / `A-D` / `W-S` |
+| Switch profile tabs | `1` `2` `3` |
+| Open / close selection screens | Click the corresponding buttons |
 
 ---
 
@@ -106,168 +85,164 @@ Need 2 dependence libraries: [**Pygame-ce**](https://pypi.org/project/pygame-ce/
 
 | Mode | Description | Best For |
 |---|---|---|
-| **Arcade** | The classic endless run experience | New players, score chasing, casual runs |
-| **Boss** | A structured battle against a selected boss | Players who want variety and phase-based challenge |
-| **HELL** | The most brutal preset with maximum pressure | Advanced players looking for a serious test |
+| **Arcade** | Standard mode where you dodge pipes, score points, and collect items while surviving as long as possible | Practice, coin farming, quest completion |
+| **Boss** | A dedicated boss battle mode with HP, phases, and unique attacks | Challenge runs, boss wins, higher rewards |
+| **HELL** | A special high-intensity boss experience with the harshest pressure | Experienced players only |
 
-| Mode Detail | Notes |
-|---|---|
-| Arcade | Best place to learn how the bird feels, how pipes behave, and how scoring works |
-| Boss | Adds a different rhythm: survival still matters, but boss damage and fight phases become important |
-| HELL | Intended as a high-intensity challenge rather than a relaxed run |
+### Reward Structure
+- Arcade rewards depend on the run result and difficulty.
+- Boss mode grants rewards based on difficulty and boss selection.
+- HELL offers the highest pressure and the biggest rewards.
 
 ---
 
-## Difficulty Levels
+## Difficulty
 
-| Difficulty | Feel | What Changes |
+| Difficulty | Gravity | Flap Strength | Pipe Speed | Gap Size | Pipe Frequency | Power-Up Rate | Boss HP | Wind | Background Speed |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Easy | 1350 | -430 | 220 | 190 | 1.62 | 0.26 | 6 | 10 | 26 |
+| Normal | 1500 | -440 | 250 | 165 | 1.40 | 0.20 | 8 | 16 | 33 |
+| Hard | 1650 | -452 | 285 | 142 | 1.20 | 0.15 | 10 | 24 | 40 |
+| Insane | 1860 | -454 | 336 | 118 | 0.95 | 0.08 | 13 | 36 | 49 |
+
+### What These Mean
+- Higher gravity makes the bird fall faster.
+- Stronger flap values give more lift, but require tighter timing.
+- Faster pipes demand quicker reactions.
+- Smaller gaps and denser pipe spawns make survival harder.
+- Power-ups appear less often at higher difficulty levels.
+
+---
+
+## Items & Power-Ups
+
+| Item | Effect | Duration / Behavior |
 |---|---|---|
-| **EASY** | Forgiving and beginner-friendly | Slower pace, larger gaps, easier survival |
-| **NORMAL** | Balanced default challenge | Good middle ground for most players |
-| **HARD** | Fast, tight, and demanding | Smaller gaps, quicker pipes, harder boss fights |
-| **INSANE** | Extremely punishing | Very fast pipes, tiny margins, strong pressure |
+| **Coin** | Adds currency immediately when collected | Usually +10 coins per coin, can be multiplied |
+| **Shield** | Gives temporary protection | Easy 7.0s, Normal 6.5s, Hard/Insane 6.0s |
+| **Magnet** | Pulls nearby items toward the bird | Easy 5.8s, Normal 5.4s, Hard/Insane 5.0s |
+| **Multiplier** | Multiplies coin rewards | Easy 6.5s, Normal 6.0s, Hard/Insane 5.5s |
+| **Core** | Appears in boss fights only | Deals 1 damage to the boss |
 
-| Beginner advice | Details |
-|---|---|
-| Best first choice | Start with **EASY** |
-| Next step | Move to **NORMAL** once control feels stable |
-| Avoid too early | **HARD** and **INSANE** can feel overwhelming before you learn the rhythm |
-| Why difficulty matters | It changes not only pipe pressure but also the overall feel of the game and boss fights |
+### Spawn Rates by Difficulty
 
----
+| Difficulty | Coin | Magnet | Shield | Multiplier |
+|---|---:|---:|---:|---:|
+| Easy | 0.32 | 0.26 | 0.18 | 0.24 |
+| Normal | 0.33 | 0.25 | 0.16 | 0.26 |
+| Hard | 0.34 | 0.24 | 0.15 | 0.27 |
+| Insane | 0.35 | 0.23 | 0.14 | 0.28 |
 
-## How Scoring Works
-
-| Action | Result |
-|---|---|
-| Passing a pipe | Increases score |
-| Passing pipes consistently | Builds combo and rhythm |
-| Surviving longer | Naturally creates more scoring opportunities |
-| Collecting coins | Adds currency for unlocks |
-| Completing runs | Contributes to profile stats, quests, and achievements |
-
-| Scoring concept | Explanation |
-|---|---|
-| Score | Your main run result |
-| Coins | Currency used for unlocks and progression |
-| Combo | A measure of sustained performance and consistency |
-| Best score | Stored separately so you can track progress over time |
+### Notes
+- Shield and Invulnerability are shown on the HUD when active.
+- Core is a combat item used to damage bosses, not a farming item.
+- Every power-up has its own visual effect for clarity and feedback.
 
 ---
 
-## Items and Power-Ups
+## Skins
 
-| Item | Effect |
-|---|---|
-| **Coin** | Grants currency |
-| **Shield** | Protects you from danger for a limited time |
-| **Magnet** | Pulls nearby collectibles toward the bird |
-| **Boost** | Gives a temporary advantage |
-| **Multiplier** | Increases coin gain for a limited time |
-| **Revive** | Adds an extra survival chance |
-| **Core** | Boss Mode damage pickup used to reduce boss HP |
+Skins are cosmetic only. They change the bird’s appearance and visual style, and they are unlocked with coins.
 
-| Beginner note | Details |
-|---|---|
-| Power-ups matter | They can make a run much safer or more rewarding |
-| Boss fights use special drops | Boss fights have their own reward logic and item balance |
-| Shield and revive are especially valuable | These can save a run when your timing slips |
-| Coin multipliers help progression | They are important for unlocking skins faster |
+| # | Skin | Price | FX Style |
+|---:|---|---:|---|
+| 1 | CLASSIC | 0 | CLASSIC |
+| 2 | NEON | 80 | NEON |
+| 3 | AQUA | 90 | AQUA |
+| 4 | MINT | 100 | MINT |
+| 5 | CHERRY | 110 | CHERRY |
+| 6 | LAGOON | 120 | LAGOON |
+| 7 | EMBER | 130 | EMBER |
+| 8 | SHADOW | 140 | SHADOW |
+| 9 | VIOLET | 150 | VIOLET |
+| 10 | ROSE | 160 | ROSE |
+| 11 | CRYSTAL | 180 | CRYSTAL |
+| 12 | SOLAR | 200 | SOLAR |
+| 13 | LAVA | 220 | LAVA |
+| 14 | AURORA | 240 | AURORA |
+| 15 | PIXEL | 260 | PIXEL |
+| 16 | FROST | 280 | FROST |
+| 17 | STEEL | 300 | STEEL |
+| 18 | GHOST | 320 | GHOST |
+| 19 | PRISM | 340 | PRISM |
+| 20 | CYBER | 360 | CYBER |
+| 21 | GALAXY | 380 | GALAXY |
+| 22 | VOID | 400 | VOID |
+| 23 | ROYAL | 420 | ROYAL |
+| 24 | SAND | 440 | SAND |
+| 25 | CORAL | 460 | CORAL |
 
----
-
-## Skins System
-
-| Topic | Details |
-|---|---|
-| What skins do | Change the bird’s visual style |
-| Gameplay impact | Cosmetic only; no gameplay advantage |
-| Default skin | **CLASSIC** |
-| Unlock method | Spend coins |
-| Equip method | Select the skin from the Skins menu |
-
-| Skin system detail | Explanation |
-|---|---|
-| Browsing | You can move through skins using mouse or keyboard navigation |
-| Purchasing | Locked skins cost coins, and the price increases for higher-tier skins |
-| Progression value | Skins give long-term goals without affecting balance |
-| Visual identity | Each skin helps the player make the bird feel more personal |
-
----
-
-## Profile, Stats, Quests, and Achievements
-
-### Profile
-
-| Section | What It Shows |
-|---|---|
-| **Stats** | Long-term performance data such as runs, wins, score progress, flaps, coins, items, play time, boss damage, and more |
-| **Quests** | Daily and weekly objectives you can complete for rewards |
-| **Achievements** | Milestones that unlock automatically as you play |
-
-### Stats Tracked
-
-| Stat | Meaning |
-|---|---|
-| Runs | Total completed runs |
-| Wins | Successful clear or win count |
-| Boss wins | Boss victories |
-| Hard boss wins | Boss victories on hard settings |
-| Flaps | Total flap count |
-| Pipes scored | Total pipes passed |
-| Coins collected | Total coins gathered |
-| Items collected | Total item pickups |
-| Play time | Total time played |
-| Shield breaks | Shields consumed to block hits |
-| Boss damage dealt | Damage contributed in boss fights |
-| Daily quests completed | Daily objective completion count |
-| Weekly quests completed | Weekly objective completion count |
-| Max score | Best score achieved |
-| Best combo | Strongest combo reached |
+### Skin Recommendations
+- For clean readability: CLASSIC, NEON, AQUA, FROST.
+- For flashy effects: EMBER, VOID, PRISM, CYBER, GALAXY.
+- For premium vibes: ROYAL, AURORA, CORAL.
 
 ---
 
-## Quests
+## Bosses
 
-| Quest Type | Description |
-|---|---|
-| **Daily quests** | Smaller, faster goals that refresh every day |
-| **Weekly quests** | Bigger goals that refresh each week |
+Bosses have HP, multiple phases, and attack families with their own shapes and effects. The game includes 16 major bosses plus a special HELL boss variant.
 
-| Quest examples | What they ask you to do |
-|---|---|
-| Pipe Sweep | Score a certain number of pipes |
-| Coin Pulse | Collect coins |
-| Sky Rhythm | Flap a set number of times |
-| Supply Run | Collect items |
-| Long Glide | Play for a set amount of time |
-| Boost Charge | Collect boost items |
-| Shield Drill | Block hits with shields |
-| Boss Breaker | Defeat bosses |
-| Core Pressure | Deal boss damage |
-| Road Worker | Finish runs |
-| Clean Flight | Win runs |
-| Legend Lane | Score many pipes total |
-| Rare Supply | Collect rare items |
-| Endurance Run | Play for a long time |
+| Boss | Short Name | Attack / Art Style | Overview |
+|---|---|---|---|
+| Aegis Core | Aegis | shield / aegis | Defensive opening boss with stable pressure |
+| Tempest | Tempest | wind / tempest | Wind-like patterns and lane pressure |
+| Void Regent | Void | void / void | Dark, tricky, and unpredictable |
+| Chrono Bastion | Chrono | time / chrono | Time-based movement and rotating hazards |
+| Prism Nexus | Prism | prism / prism | Refraction-style visual attacks |
+| Verdant Bloom | Bloom | bloom / bloom | Organic pressure and growth-themed patterns |
+| Ember Warden | Ember | fire / ember | Heat-based hazard boss |
+| Tide Oracle | Tide | wave / tide | Water-like wave arcs and flow pressure |
+| Frost Citadel | Frost | ice / frost | Cold, sharp, and timing-heavy |
+| Stellar Forge | Stellar | star / stellar | Cosmic bursts and star-shaped attacks |
+| Obsidian Seraph | Obsidian | dark / obsidian | Heavy dark geometry and dense pressure |
+| Aurora Heart | Aurora | light / aurora | Smooth glowing patterns and elegant movement |
+| Nova Crown | Nova | burst / nova | Fast explosive star pressure |
+| Rift Monarch | Rift | rift / rift | Space-tearing attack patterns |
+| Thorn Sovereign | Thorn | thorn / thorn | Sharp, branching hazard lines |
+| Sentinel Prism | Sentinel | sentinel / sentinel | Defensive ring-based boss with clean geometry |
+| HELL | HELL | ember / ember | Special extreme boss variant |
 
-| Quest rewards | Details |
-|---|---|
-| Main reward | Coins |
-| Long-term reward | Progress toward quest-related achievements |
-| Why they matter | They give structure to play sessions and speed up unlock progress |
+### Boss Behavior
+- Bosses progress through 3 phases:
+  - Phase 2 below 66% HP
+  - Phase 3 below 33% HP
+- Each phase increases pressure, speed, or attack density.
+- Boss projectiles are designed to avoid completely blocking the play lane.
+- The HELL encounter is the hardest version, with the most intense pacing and effects.
+
+### Boss Rewards
+- Boss clears grant coin rewards based on difficulty.
+- Standard bosses reward more as their index and difficulty rise.
+- HELL grants the largest special reward.
 
 ---
 
-## Achievements
+## Quests & Achievements
 
-| Achievement Type | Purpose |
-|---|---|
-| Early milestones | Teach the player that progress is being tracked from the beginning |
-| Mid-game goals | Reward continued play |
-| Long-term goals | Encourage mastery and persistence |
+### Quests
 
-| Example achievements | Requirement |
+The game includes both **daily** and **weekly** quests. They are generated from a fixed pool and tracked by date and week.
+
+| Type | Quest Name | Objective | Reward |
+|---|---|---|---:|
+| Daily | Pipe Sweep | Score a target number of pipes | 45–70 |
+| Daily | Coin Pulse | Collect coins | 45–80 |
+| Daily | Sky Rhythm | Flap a target number of times | 40–75 |
+| Daily | Supply Run | Collect items | 50–85 |
+| Daily | Long Glide | Play for a set amount of time | 45–80 |
+| Daily | Shield Drill | Block hits with a shield | 55–90 |
+| Weekly | Boss Breaker | Defeat bosses | 140–220 |
+| Weekly | Core Pressure | Deal boss damage | 130–210 |
+| Weekly | Road Worker | Finish runs | 120–190 |
+| Weekly | Clean Flight | Win runs | 150–230 |
+| Weekly | Legend Lane | Score a total number of pipes | 150–240 |
+| Weekly | Rare Supply | Collect rare items | 140–220 |
+| Weekly | Endurance Run | Play for a long time | 150–240 |
+
+### Achievements
+
+| Achievement | Requirement |
 |---|---|
 | First Flight | Flap once |
 | Airborne | Play for 90 seconds |
@@ -275,11 +250,13 @@ Need 2 dependence libraries: [**Pygame-ce**](https://pypi.org/project/pygame-ce/
 | Coin Hoard | Collect 250 coins |
 | Item Lover | Collect 40 items |
 | Shield Guard | Block 4 hits with shields |
-| Boss Breaker | Defeat one boss |
-| Boss Master | Defeat multiple bosses |
-| Hard Fighter | Beat a boss on Hard |
-| Sky Runner | Finish 5 runs |
+| Boss Breaker | Defeat 1 boss |
+| Boss Master | Defeat 4 bosses |
+| Hard Fighter | Defeat a boss on Hard |
+| Daily Runner | Complete 3 daily quests |
+| Weekly Champ | Complete 3 weekly quests |
 | Veteran | Finish 20 runs |
+| Sky Runner | Finish 5 runs |
 | Pipe Veteran | Score 100 pipes |
 | Coin Collector | Collect 1000 coins |
 | Combo Spark | Reach a combo of 10 |
@@ -290,90 +267,57 @@ Need 2 dependence libraries: [**Pygame-ce**](https://pypi.org/project/pygame-ce/
 
 ---
 
-## Boss Mode Explained
+## Progression & Save Data
 
-| Topic | Details |
+| Saved Data | What It Stores |
 |---|---|
-| Boss selection | Boss Mode lets you choose from a roster of unique bosses |
-| Boss identity | Each boss has its own theme, visuals, HP scaling, speed, and behavior style |
-| Boss phases | Many bosses evolve through multiple phases |
-| Boss attacks | Bosses use different attack patterns instead of just standard pipes |
-| Boss rewards | Boss fights can drop special items and support pickups |
-| Boss damage | Certain pickups reduce boss HP and move the fight forward |
+| Skins | Current skin and unlocked skins |
+| Difficulty | Last selected difficulty |
+| Coins | Current coin total |
+| Best scores | Best score per mode / difficulty |
+| Sound | Audio on/off state |
+| Boss | Last selected boss |
+| Profile totals | Total runs, wins, deaths, combos, quests, boss damage, and more |
+| Achievements | Unlocked achievement list |
+| Quest state | Daily / weekly quest progress |
+| Last run summary | Summary of the most recent run |
+| UI state | Profile tab, achievement view, hitbox visibility |
 
-| Boss Mode beginner guide | Details |
-|---|---|
-| Do not treat it like Arcade | Boss fights are more structured and more aggressive |
-| Learn the attack rhythm | Each boss has patterns worth memorizing |
-| Survive first, optimize later | Staying alive is more important than forcing damage |
-| Difficulty matters a lot | Boss HP, speed, and pacing all get harder across difficulties |
+### Main Profile Stats
+- Runs
+- Wins
+- Boss wins
+- Boss wins on Hard
+- Deaths
+- Flaps
+- Pipes scored
+- Coins collected
+- Items collected
+- Shield breaks
+- Boss damage dealt
+- Play time
+- Daily quests completed
+- Weekly quests completed
+- Max score
+- Best combo
 
 ---
 
-## Saving and Persistence
+## Tips for New Players
 
-| Topic | Details |
-|---|---|
-| Save file | The game stores progress in a local JSON save file |
-| What persists | Coins, unlocked skins, equipped skin, stats, quest status, achievements, and settings |
-| Why it matters | You always have a reason to keep improving, even after a failed run |
-| Best habit | Check your profile and return to quests regularly to keep progress moving |
-
-| Player benefit | Explanation |
-|---|---|
-| No need to grind the same run forever | Multiple systems reward different kinds of play |
-| Progress feels visible | Coins, unlocks, and achievements make improvement easy to notice |
-| New goals appear naturally | Once one milestone is done, another is already waiting |
+1. Do not hold the flap button too long. Short, controlled taps are more stable.
+2. In Arcade mode, survival matters more than raw speed at first.
+3. Shield is extremely useful while you are learning pipe timing.
+4. Magnet helps collect items more safely, especially in coin-heavy runs.
+5. Multiplier is one of the best tools for farming coins efficiently.
+6. In boss fights, learn the phase change before pushing damage aggressively.
+7. If a lane feels too tight, reset your rhythm instead of spamming flaps.
+8. Unlock cheaper skins first so you can have more visual variety without long grinding.
 
 ---
 
-## Beginner Tips
+## Installation & Run
 
-| Tip | Why It Helps |
-|---|---|
-| Start on **EASY** | Gives you room to learn the rhythm of the bird |
-| Use short taps | Prevents overcorrection and helps you stay stable |
-| Focus on pipe spacing | Good spacing awareness makes survival much easier |
-| Do not panic-flap | Panic usually causes more mistakes than the obstacle itself |
-| Learn one mode first | Master Arcade before jumping into Boss or HELL |
-| Watch your position, not only the next pipe | Good players think ahead, not just react late |
-| Use quests as motivation | They are a reliable way to earn coins while improving |
-| Treat skins as optional goals | They are cosmetic, so they should not distract from core skill building |
-| Use pause when needed | Resetting your attention can improve consistency |
-| Accept short runs early | Failing is part of learning the control rhythm |
-
----
-
-## Recommended Learning Path
-
-| Stage | Goal |
-|---|---|
-| 1 | Learn flapping timing in **EASY** Arcade |
-| 2 | Reach stable pipe passing without panic inputs |
-| 3 | Start collecting coins and learning item effects |
-| 4 | Try **NORMAL** once the movement feels natural |
-| 5 | Begin completing quests and unlocking skins |
-| 6 | Enter Boss Mode and learn attack patterns |
-| 7 | Challenge **HARD** or **INSANE** only after control is consistent |
-| 8 | Push achievements, boss clears, and long-term score goals |
-
----
-
-## One-Paragraph Description for README
-
-**Sky Pulse Bird** is a modern flappy-style arcade game that combines simple bird control with deep progression systems, including multiple difficulties, boss battles, unlockable skins, quests, achievements, and persistent save data. It is easy to pick up, but rewards precision, timing, and long-term mastery.
-
----
-
-## In Short
-
-| Feature | Why Players Care |
-|---|---|
-| Simple controls | Easy to learn immediately |
-| Multiple difficulties | Supports both beginners and experts |
-| Boss fights | Adds variety beyond endless pipe survival |
-| Skins | Gives cosmetic progression and personalization |
-| Quests and achievements | Provides long-term goals |
-| Save system | Makes every session meaningful |
-
----
+```bash
+pip install pygame-ce numpy
+python sky_pulse_bird_fix_legendary.py
