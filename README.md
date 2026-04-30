@@ -307,7 +307,7 @@ The game includes both **daily** and **weekly** quests. They are generated from 
 2. In Arcade mode, survival matters more than raw speed at first.
 3. Shield is extremely useful while you are learning pipe timing.
 4. Magnet helps collect items more safely, especially in coin-heavy runs.
-5. Multiplier is one of the best tools for farming coins efficiently.
+5. Multiplier is one of the best tools for farming coins and scores efficiently.
 6. In boss fights, learn the phase change before pushing damage aggressively.
 7. If a lane feels too tight, reset your rhythm instead of spamming flaps.
 8. Unlock cheaper skins first so you can have more visual variety without long grinding.
