@@ -46,8 +46,6 @@ Need 2 dependence libraries: [**Pygame-ce**](https://pypi.org/project/pygame-ce/
 - [Quests & Achievements](#quests--achievements)
 - [Progression & Save Data](#progression--save-data)
 - [Tips for New Players](#tips-for-new-players)
-- [Installation & Run](#installation--run)
-
 ---
 
 ## Overview
@@ -313,11 +311,3 @@ The game includes both **daily** and **weekly** quests. They are generated from 
 6. In boss fights, learn the phase change before pushing damage aggressively.
 7. If a lane feels too tight, reset your rhythm instead of spamming flaps.
 8. Unlock cheaper skins first so you can have more visual variety without long grinding.
-
----
-
-## Installation & Run
-
-```bash
-pip install pygame-ce numpy
-python sky_pulse_bird_fix_legendary.py
