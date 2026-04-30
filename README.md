@@ -121,7 +121,7 @@ Sky Pulse Bird is a compact but content-rich arcade flight game focused on timin
 | **Coin** | Adds currency immediately when collected | Usually +10 coins per coin, can be multiplied |
 | **Shield** | Gives temporary protection | Easy 7.0s, Normal 6.5s, Hard/Insane 6.0s |
 | **Magnet** | Pulls nearby items toward the bird | Easy 5.8s, Normal 5.4s, Hard/Insane 5.0s |
-| **Multiplier** | Multiplies coin rewards | Easy 6.5s, Normal 6.0s, Hard/Insane 5.5s |
+| **Multiplier** | Multiplies coin and score rewards | Easy 6.5s, Normal 6.0s, Hard/Insane 5.5s |
 | **Core** | Appears in boss fights only | Deals 1 damage to the boss |
 
 ### Spawn Rates by Difficulty
