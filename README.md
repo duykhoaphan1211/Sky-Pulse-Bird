@@ -132,7 +132,7 @@ Sky Pulse Bird is a compact but content-rich arcade flight game focused on timin
 | Insane | 0.35 | 0.23 | 0.14 | 0.28 |
 
 ### Notes
-- Shield and Invulnerability are shown on the HUD when active.
+- Items are shown on the HUD when active.
 - Core is a combat item used to damage bosses, not a farming item.
 - Every power-up has its own visual effect for clarity and feedback.
 
