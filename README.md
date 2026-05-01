@@ -57,7 +57,7 @@ Sky Pulse Bird is a compact but content-rich arcade flight game focused on timin
 | Feature | Description |
 |---|---|
 | Core gameplay | Fly, dodge pipes, collect coins and items, and keep your rhythm stable |
-| Game modes | Arcade and Boss |
+| Game modes | Arcade, Boss and HELL |
 | Difficulty levels | Easy, Normal, Hard, Insane |
 | Progression | Coins, skin unlocks, quests, achievements, best scores |
 | Boss fights | Multi-phase bosses with unique projectile patterns and effects |
